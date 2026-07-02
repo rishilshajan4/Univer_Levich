@@ -121,6 +121,14 @@ export interface LevichSheetProps {
    * typically owns.
    */
   onImport?: (grid: (string | number)[][], location: ImportLocation) => boolean | void;
+  /**
+   * File ▸ Save / ⌘S (Ctrl+S). Receives the LIVE Univer workbook snapshot so
+   * the host can persist it to its backend. Return `true` if handled; return
+   * falsy (or omit) to use the built-in fallback, which persists the snapshot
+   * to `localStorage["levich:save:<workbookId>"]` and flashes a "Saved" toast.
+   * Either way, the browser's own "Save page" dialog is always suppressed.
+   */
+  onSave?: (snapshot: WorkbookData) => boolean | void;
   /** File ▸ New — host hook for a fresh document. Defaults to clearing the sheet. */
   onNew?: () => void;
   /** File ▸ Make a copy — host hook. Defaults to downloading a `.xlsx` copy. */

@@ -29,7 +29,7 @@ function ribbonFor(toolbar: LevichSheetProps["toolbar"]): "collapsed" | "simple"
 }
 
 export const LevichSheet = forwardRef<LevichSheetHandle, LevichSheetProps>(function LevichSheet(props, ref) {
-  const { data, columns, snapshot, freeze, pivot, footer, currencySymbol, comments, columnWidths, getRowKey, toolbar, className, onCellEdit, onColumnWidthsChange, onReady, onImport, onNew, onMakeCopy, onRename, onCopyToExisting } = props;
+  const { data, columns, snapshot, freeze, pivot, footer, currencySymbol, comments, columnWidths, getRowKey, toolbar, className, onCellEdit, onColumnWidthsChange, onReady, onImport, onSave, onNew, onMakeCopy, onRename, onCopyToExisting } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const univerRef = useRef<{ dispose: () => void } | null>(null);
@@ -171,7 +171,7 @@ export const LevichSheet = forwardRef<LevichSheetHandle, LevichSheetProps>(funct
 
   return (
     <div className={className ?? "levich-sheet"} style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", minHeight: 0 }}>
-      <LevichMenuBar api={toolbarApi} onOpenFind={() => setFindOpen(true)} onImport={onImport} onNew={onNew} onMakeCopy={onMakeCopy} onRename={onRename} />
+      <LevichMenuBar api={toolbarApi} onOpenFind={() => setFindOpen(true)} onImport={onImport} onSave={onSave} onNew={onNew} onMakeCopy={onMakeCopy} onRename={onRename} />
       <LevichToolbar api={toolbarApi} onOpenFind={() => setFindOpen(true)} />
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />

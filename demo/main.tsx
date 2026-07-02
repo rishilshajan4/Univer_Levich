@@ -2,6 +2,8 @@ import { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { LevichSheet, LEVICH_BRAND, type ColumnDef, type LevichSheetHandle, type SheetData } from "../src";
 import { takeImportPayload, takeSnapshotPayload } from "../src/core/import-data";
+import { FORMULA_TESTS } from "./formula-tests";
+import { FORMULA_TESTS_ALL } from "./formula-tests-all";
 
 // "Create new spreadsheet" / "Replace spreadsheet" (import) opens this URL in a
 // new tab (or reloads) and stashes the imported workbook. Rich .xlsx imports
@@ -68,8 +70,129 @@ function FinOpzLogo() {
 
 function App() {
   const ref = useRef<LevichSheetHandle>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const apiRef = useRef<any>(null);
   const [note, setNote] = useState("");
   const [closed, setClosed] = useState(false);
+  // Spreadsheet document title, updated by File ▸ Rename (onRename hook).
+  const [renamedTitle, setRenamedTitle] = useState<string | null>(null);
+
+  // Seed the active sheet with the whole formula matrix so Univer computes each
+  // one live — Result (D) is the real formula, Expected (E) is the known answer,
+  // Status (F) is a tolerant PASS/CHECK comparison. Verifies the free formula
+  // engine end-to-end (SUM/MIN/MAX/VLOOKUP/HLOOKUP/… and more).
+  const verifyFunctions = () => {
+    const api = apiRef.current;
+    const ws = api?.getActiveWorkbook?.()?.getActiveSheet?.();
+    if (!ws) return setNote("Sheet not ready yet");
+    const header = ["Category", "Function", "Formula", "Result (live)", "Expected", "Status"];
+    // Works for text, numbers, and booleans (direct D=E), with a numeric
+    // tolerance for floats and a format-tolerant text fallback (coerce→trim→
+    // strip thousands-commas) so a correct value that differs only in type or
+    // formatting — e.g. FIXED/DOLLAR/DEC2BIN returning text vs a numeric
+    // expected — still counts as PASS. IFERROR turns #VALUE!/#N/A/#NAME? into
+    // "✗ ERROR" instead of poisoning the Status cell.
+    // Nested IFs so ABS(D-E) is ONLY evaluated when both are numbers — a flat
+    // OR/AND would evaluate ABS(text-text) too (spreadsheets don't short-
+    // circuit), erroring on text results even when D exactly equals E.
+    const status = (r: number) =>
+      `=IFERROR(IF(D${r}=E${r},"✓ PASS",IF(AND(ISNUMBER(D${r}),ISNUMBER(E${r})),IF(ABS(D${r}-E${r})<0.01,"✓ PASS","✗ CHECK"),IF(SUBSTITUTE(TRIM(D${r}&""),",","")=SUBSTITUTE(TRIM(E${r}&""),",",""),"✓ PASS","✗ CHECK"))),"✗ ERROR")`;
+    const rows: unknown[][] = [header];
+    FORMULA_TESTS.forEach((t) => {
+      rows.push([t.category, t.label, t.formula.slice(1), t.formula, t.expected, status(rows.length + 1)]);
+    });
+
+    // Criteria/rank/lookup functions need REAL cell ranges (Univer rejects
+    // {array} constants there). Prove they work against an input block in H1:I5.
+    const rangeTests: Array<[string, string, string, number]> = [
+      ["SUM(range)", "SUM(H1:H5)", "=SUM(H1:H5)", 150],
+      ["MIN(range)", "MIN(H1:H5)", "=MIN(H1:H5)", 10],
+      ["MAX(range)", "MAX(H1:H5)", "=MAX(H1:H5)", 50],
+      ["AVERAGE(range)", "AVERAGE(H1:H5)", "=AVERAGE(H1:H5)", 30],
+      ["SUMIF range >25", 'SUMIF(H1:H5,">25")', '=SUMIF(H1:H5,">25")', 120],
+      ["COUNTIF range >25", 'COUNTIF(H1:H5,">25")', '=COUNTIF(H1:H5,">25")', 3],
+      ["AVERAGEIF range >25", 'AVERAGEIF(H1:H5,">25")', '=AVERAGEIF(H1:H5,">25")', 40],
+      ["SUMIFS range", 'SUMIFS(H1:H5,H1:H5,">=30")', '=SUMIFS(H1:H5,H1:H5,">=30")', 120],
+      ["COUNTIFS range", 'COUNTIFS(H1:H5,">=30",I1:I5,"<=400")', '=COUNTIFS(H1:H5,">=30",I1:I5,"<=400")', 2],
+      ["AVERAGEIFS range", 'AVERAGEIFS(I1:I5,H1:H5,">=30")', '=AVERAGEIFS(I1:I5,H1:H5,">=30")', 400],
+      ["RANK in range", "RANK(30,H1:H5,0)", "=RANK(30,H1:H5,0)", 3],
+      ["VLOOKUP range", "VLOOKUP(30,H1:I5,2,FALSE)", "=VLOOKUP(30,H1:I5,2,FALSE)", 300],
+    ];
+    rangeTests.forEach(([label, text, formula, expected]) => {
+      rows.push(["Cell-range", label, text, formula, expected, status(rows.length + 1)]);
+    });
+
+    try {
+      ws.setColumnCount?.(Math.max(9, ws.getMaxColumns?.() ?? 9));
+      ws.setRowCount?.(Math.max(rows.length + 2, ws.getMaxRows?.() ?? rows.length + 2));
+      // Input block FIRST (H1:H5 = 10..50, I1:I5 = 100..500) so the range
+      // formulas resolve against real data.
+      ws.getRange(0, 7, 5, 2)?.setValues([[10, 100], [20, 200], [30, 300], [40, 400], [50, 500]]);
+      ws.getRange(0, 0, rows.length, header.length)?.setValues(rows);
+      [100, 160, 320, 130, 130, 100].forEach((w, c) => ws.setColumnWidth?.(c, w));
+      ws.getRange(0, 0, 1, header.length)?.setFontWeight?.("bold");
+      setNote(`Ran ${rows.length - 1} formulas — check the Status column`);
+    } catch (e) {
+      console.warn("[demo] verify functions failed", e);
+      setNote("Verify failed — see console");
+    }
+  };
+
+  // MASSIVE-SCALE check: run the FULL per-function matrix (one valid, deterministic
+  // formula per catalog function) with live Result + Expected + PASS/CHECK — the
+  // same treatment as "Verify functions", but for all ~529. "N/A" expecteds
+  // (volatile / external / host-dependent) render as "⊘ N/A" (registered, no
+  // deterministic check).
+  const verifyAllFunctions = () => {
+    const api = apiRef.current;
+    const ws = api?.getActiveWorkbook?.()?.getActiveSheet?.();
+    if (!ws) return setNote("Sheet not ready yet");
+    if (!FORMULA_TESTS_ALL.length) return setNote("Full 529 matrix not loaded yet");
+
+    const status = (r: number) =>
+      `=IFERROR(IF(D${r}=E${r},"✓ PASS",IF(AND(ISNUMBER(D${r}),ISNUMBER(E${r})),IF(ABS(D${r}-E${r})<0.01,"✓ PASS","✗ CHECK"),IF(SUBSTITUTE(TRIM(D${r}&""),",","")=SUBSTITUTE(TRIM(E${r}&""),",",""),"✓ PASS","✗ CHECK"))),"✗ ERROR")`;
+    const header = ["Category", "Function", "Formula", "Result (live)", "Expected", "Status"];
+    const rows: unknown[][] = [header];
+    FORMULA_TESTS_ALL.forEach((t) => {
+      const r = rows.length + 1;
+      const isNA = t.expected === "N/A";
+      rows.push([t.category, t.label, t.formula.slice(1), t.formula, t.expected, isNA ? "⊘ N/A" : status(r)]);
+    });
+
+    try {
+      ws.setColumnCount?.(Math.max(9, ws.getMaxColumns?.() ?? 9));
+      ws.setRowCount?.(Math.max(rows.length + 2, ws.getMaxRows?.() ?? rows.length + 2));
+      ws.getRange(0, 7, 5, 2)?.setValues([[10, 100], [20, 200], [30, 300], [40, 400], [50, 500]]);
+      ws.getRange(0, 0, rows.length, header.length)?.setValues(rows);
+      [110, 180, 320, 150, 140, 110].forEach((w, c) => ws.setColumnWidth?.(c, w));
+      ws.getRange(0, 0, 1, header.length)?.setFontWeight?.("bold");
+      setNote(`Computing ${FORMULA_TESTS_ALL.length} functions…`);
+    } catch (e) {
+      console.warn("[demo] verify all — seed failed", e);
+      return setNote("Verify-all failed — see console");
+    }
+
+    // After the engine finishes, read the Status column (F) and summarize.
+    window.setTimeout(() => {
+      try {
+        const st = ws.getRange(1, 5, FORMULA_TESTS_ALL.length, 1)?.getValues?.() ?? [];
+        let pass = 0, check = 0, err = 0, na = 0;
+        const nonPass: string[] = [];
+        st.forEach((row, i) => {
+          const cell = row?.[0];
+          const v = String((cell && typeof cell === "object" ? (cell as { v?: unknown }).v : cell) ?? "");
+          if (v.includes("PASS")) pass++;
+          else if (v.includes("N/A")) na++;
+          else if (v.includes("ERROR")) { err++; nonPass.push(FORMULA_TESTS_ALL[i].label); }
+          else if (v.includes("CHECK")) { check++; nonPass.push(FORMULA_TESTS_ALL[i].label); }
+        });
+        console.info(`[levich] ALL → ${pass} PASS · ${check} CHECK · ${err} ERROR · ${na} N/A. Non-pass:`, nonPass);
+        setNote(`${pass} PASS · ${check} CHECK · ${err} ERROR · ${na} N/A of ${FORMULA_TESTS_ALL.length}`);
+      } catch (e) {
+        console.warn("[demo] verify all — summary read failed", e);
+      }
+    }, 5000);
+  };
 
   const imported = useMemo(() => (IMPORT_PAYLOAD ? gridToSheet(IMPORT_PAYLOAD) : null), []);
   const data = imported ? imported.data : BLANK_DATA;
@@ -93,7 +216,7 @@ function App() {
     );
   }
 
-  const title = IMPORT_SNAPSHOT ? "Imported workbook" : imported ? "Imported spreadsheet" : "Untitled spreadsheet";
+  const title = renamedTitle ?? (IMPORT_SNAPSHOT ? "Imported workbook" : imported ? "Imported spreadsheet" : "Untitled spreadsheet");
   const subtitle = IMPORT_SNAPSHOT ? `${visibleSheetCount(IMPORT_SNAPSHOT)} sheet(s) · rich import` : imported ? `${data.length} rows imported` : "Blank spreadsheet";
 
   return (
@@ -119,6 +242,42 @@ function App() {
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
           {note && <span style={{ color: "#067647", fontSize: 13, fontWeight: 500 }}>{note}</span>}
+
+          <button
+            onClick={verifyFunctions}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              padding: "8px 16px",
+              borderRadius: 8,
+              border: `1px solid ${LEVICH_BRAND}`,
+              background: "#fff",
+              color: LEVICH_BRAND,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Verify functions
+          </button>
+
+          <button
+            onClick={verifyAllFunctions}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              padding: "8px 16px",
+              borderRadius: 8,
+              border: `1px solid ${LEVICH_BRAND}`,
+              background: "#fff",
+              color: LEVICH_BRAND,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Verify ALL 529
+          </button>
 
           <button
             onClick={download}
@@ -170,6 +329,9 @@ function App() {
           snapshot={IMPORT_SNAPSHOT ?? undefined}
           freeze={imported ? { rows: 1 } : false}
           currencySymbol="$"
+          onReady={(api) => { apiRef.current = api; }}
+          // File ▸ Rename renames the SPREADSHEET (document) — reflect it in the header.
+          onRename={(name) => { setRenamedTitle(name); document.title = `${name} - FinOpz Sheets`; }}
           // Real-world routing: document-level imports (create / replace a whole
           // document) are owned by the FinOpz backend. In PRODUCTION you'd POST/
           // PUT to your API and `return true` so the sheet skips its built-in

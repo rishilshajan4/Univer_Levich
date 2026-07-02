@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { stashSnapshotPayload } from "../core/import-data";
+import { RenameModal } from "../components/rename-modal";
 
 /* ---- Loose Facade views --------------------------------------------------- */
 interface FSheet {
@@ -96,6 +97,10 @@ export function SheetTabMenu({ api, onCopyToExisting }: SheetTabMenuProps) {
   const [menu, setMenu] = useState<{ x: number; y: number; name: string; sheetId: string } | null>(null);
   const [copyOpen, setCopyOpen] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
+  // Rename modal request — held OUTSIDE the menu so it survives the menu closing
+  // (the menu unmounts on `menu = null`). Carries the target sheet id/name and
+  // the other sheets' names to block duplicates.
+  const [renameReq, setRenameReq] = useState<{ sheetId: string; current: string; taken: Set<string> } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   // Keep the latest api for the document-level delegated handlers (which are
   // registered once and would otherwise close over the initial null api).
@@ -219,7 +224,33 @@ export function SheetTabMenu({ api, onCopyToExisting }: SheetTabMenuProps) {
     };
   }, [menu]);
 
-  if (!menu) return null;
+  // When the context menu is closed we still render the Rename modal if one was
+  // requested from it (the modal outlives the menu).
+  if (!menu) {
+    if (!renameReq) return null;
+    const applyTabRename = (name: string) => {
+      const req = renameReq;
+      setRenameReq(null);
+      try {
+        const w = (api as TabMenuApi | null)?.getActiveWorkbook?.() ?? null;
+        const t = w?.getSheetBySheetId?.(req.sheetId) ?? w?.getSheetByName?.(req.current) ?? w?.getActiveSheet?.() ?? null;
+        t?.setName?.(name);
+      } catch (e) {
+        console.warn("[levich] rename failed", e);
+      }
+    };
+    return createPortal(
+      <RenameModal
+        open
+        title="Rename sheet"
+        current={renameReq.current}
+        taken={renameReq.taken}
+        onCancel={() => setRenameReq(null)}
+        onRename={applyTabRename}
+      />,
+      document.body,
+    );
+  }
 
   const wb = () => (api as TabMenuApi | null)?.getActiveWorkbook?.() ?? null;
   // Resolve by the STABLE sheet id first (from the tab's data-id), then by name,
@@ -260,23 +291,17 @@ export function SheetTabMenu({ api, onCopyToExisting }: SheetTabMenuProps) {
   };
   const rename = () => {
     const t = target();
-    const input = window.prompt("Rename sheet", menu.name);
-    if (input === null) return close(); // cancelled
-    const name = input.trim();
-    if (!name || name === menu.name) return close(); // empty or unchanged → keep
-    // Google disallows two sheets sharing a name — reject duplicates.
+    const current = t?.getSheetName?.() ?? menu.name;
     const myId = t?.getSheetId?.() ?? menu.sheetId;
-    const dupe = (wb()?.getSheets?.() ?? []).some((s) => s.getSheetName?.() === name && s.getSheetId?.() !== myId);
-    if (dupe) {
-      window.alert(`A sheet named "${name}" already exists. Choose a different name.`);
-      return close();
-    }
-    try {
-      t?.setName?.(name);
-    } catch (e) {
-      console.warn("[levich] rename failed", e);
-    }
-    close();
+    // Names of the OTHER sheets (lower-cased) so the modal can block duplicates.
+    const taken = new Set(
+      (wb()?.getSheets?.() ?? [])
+        .filter((s) => s.getSheetId?.() !== myId)
+        .map((s) => (s.getSheetName?.() ?? "").toLowerCase())
+        .filter(Boolean),
+    );
+    setRenameReq({ sheetId: myId, current, taken });
+    close(); // close the context menu; the modal is independent state
   };
   const hide = () => {
     const visible = (wb()?.getSheets?.() ?? []).filter((s) => !s.isSheetHidden?.());

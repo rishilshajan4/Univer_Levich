@@ -16,6 +16,7 @@ import type { WorkbookData } from "../core/types";
 import { printSheet } from "../core/print-sheet";
 import { attachKeyboardShortcuts, type ShortcutContext } from "../features/keyboard-shortcuts";
 import { ImportModal, type ImportLocation } from "../components/import-modal";
+import { RenameModal } from "../components/rename-modal";
 import type { UniverAPI } from "../core/create-sheet";
 
 /* ---- Loose Facade views --------------------------------------------------- */
@@ -62,6 +63,8 @@ interface SheetOps {
   activate?(): unknown;
 }
 interface WorkbookOps extends SnapshotSource {
+  getName?(): string;
+  setName?(name: string): unknown;
   getActiveSheet(): SheetOps | null;
   getActiveRange(): RangeOps | null;
   create(name: string, rows: number, columns: number, options?: { index?: number; sheet?: Record<string, unknown> }): SheetOps;
@@ -182,6 +185,12 @@ export interface LevichMenuBarProps {
   onDownload?: () => void;
   /** Open the Levich Find & Replace modal (replaces Univer's native panel). */
   onOpenFind?: () => void;
+  /**
+   * File ▸ Save / ⌘S. Receives the live workbook snapshot to persist. Return
+   * `true` if the host handled it; falsy → built-in localStorage fallback +
+   * "Saved" toast. The browser save-page dialog is always suppressed.
+   */
+  onSave?: (snapshot: WorkbookData) => boolean | void;
   /** File ▸ New — host-defined "blank document". Defaults to clearing the sheet. */
   onNew?: () => void;
   /**
@@ -201,8 +210,14 @@ export interface LevichMenuBarProps {
   onRename?: (name: string) => void;
 }
 
-export function LevichMenuBar({ api, onDownload, onOpenFind, onNew, onImport, onMakeCopy, onRename }: LevichMenuBarProps) {
+export function LevichMenuBar({ api, onDownload, onOpenFind, onSave, onNew, onImport, onMakeCopy, onRename }: LevichMenuBarProps) {
   const [openMenu, setOpenMenu] = useState<number | null>(null);
+  // Transient "Saved" toast (File ▸ Save / ⌘S).
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // File ▸ Rename modal (replaces window.prompt). Holds the name being edited +
+  // the set of other sheet names to block duplicates.
+  const [renameState, setRenameState] = useState<{ current: string; taken?: Set<string> } | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   // View ▸ Show toggle state.
@@ -252,6 +267,28 @@ export function LevichMenuBar({ api, onDownload, onOpenFind, onNew, onImport, on
     downloadHtml(w as SnapshotSource, "levich-sheet.html");
   };
   const doPrint = () => printSheet(wb());
+
+  // File ▸ Save / ⌘S. Hands the live snapshot to the host; if the host doesn't
+  // claim it, fall back to persisting in localStorage so a standalone sheet
+  // still "saves". A brief toast confirms either way.
+  const doSave = () => {
+    const w = wb();
+    if (!w) return;
+    const snapshot = w.getSnapshot() as WorkbookData;
+    if (onSave?.(snapshot)) return flashSaved(); // host handled it
+    try {
+      const id = String((snapshot as { id?: unknown }).id ?? "workbook");
+      if (typeof localStorage !== "undefined") localStorage.setItem(`levich:save:${id}`, JSON.stringify(snapshot));
+    } catch {
+      /* quota / serialization — still flash so the shortcut feels responsive */
+    }
+    flashSaved();
+  };
+  const flashSaved = () => {
+    setSaved(true);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 1600);
+  };
 
   /** {maxRow, maxCol} of the sheet's NON-EMPTY used range from the live snapshot
    *  (-1/-1 if empty). Empty cells left behind by clearing (v: "") are ignored,
@@ -479,12 +516,21 @@ export function LevichMenuBar({ api, onDownload, onOpenFind, onNew, onImport, on
     const w = wb();
     if (w) void exportToXlsx(w as SnapshotSource, "levich-sheet-copy.xlsx");
   };
+  // Open the styled Rename modal for the SPREADSHEET (document) name — seeded
+  // with the current workbook name. (Renaming an individual sheet is done from
+  // the sheet-tab menu.) No duplicate check — spreadsheet names aren't unique.
   const rename = () => {
-    const current = sheet()?.getSheetName?.() ?? "Sheet1";
-    const name = typeof window !== "undefined" ? window.prompt("Rename sheet", current) : null;
-    if (!name) return;
-    if (onRename) onRename(name);
-    else sheet()?.setName(name);
+    const current = wb()?.getName?.() || "Untitled spreadsheet";
+    setRenameState({ current });
+  };
+  const applyRename = (name: string) => {
+    setRenameState(null);
+    try {
+      wb()?.setName?.(name); // update the Univer workbook name
+    } catch {
+      /* ignore */
+    }
+    onRename?.(name); // let the host update its displayed document title
   };
   const newDoc = () => {
     if (onNew) return onNew();
@@ -521,6 +567,7 @@ export function LevichMenuBar({ api, onDownload, onOpenFind, onNew, onImport, on
         { label: "New", onClick: newDoc },
         { label: "Import", shortcut: "⌘O", onClick: importFile, sep: true },
         { label: "Make a copy", onClick: makeCopy },
+        { label: "Save", shortcut: "⌘S", onClick: doSave, sep: true },
         {
           label: "Download",
           sep: true,
@@ -706,9 +753,10 @@ export function LevichMenuBar({ api, onDownload, onOpenFind, onNew, onImport, on
     onFind: () => onOpenFind?.(),
     onImport: () => void importFile(),
     onPrint: doPrint,
-    // No server save yet — the shortcut just suppresses the browser save dialog.
+    onSave: doSave, // ⌘S / Ctrl+S — same handler as File ▸ Save
   };
   useEffect(() => attachKeyboardShortcuts(() => kbdCtxRef.current), []);
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
 
   const openAt = (idx: number, el: HTMLElement) => {
     const r = el.getBoundingClientRect();
@@ -749,6 +797,33 @@ export function LevichMenuBar({ api, onDownload, onOpenFind, onNew, onImport, on
         )}
       {importGrid &&
         createPortal(<ImportModal open fileName={importFileName} onCancel={() => setImportGrid(null)} onImport={applyImport} />, document.body)}
+      {renameState &&
+        createPortal(
+          <RenameModal
+            open
+            title="Rename spreadsheet"
+            current={renameState.current}
+            taken={renameState.taken}
+            onCancel={() => setRenameState(null)}
+            onRename={applyRename}
+          />,
+          document.body,
+        )}
+      {saved &&
+        createPortal(
+          <div
+            role="status"
+            style={{
+              position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
+              background: "#101828", color: "#fff", fontSize: 13, fontWeight: 500,
+              padding: "8px 16px", borderRadius: 8, boxShadow: "0 4px 12px rgba(16,24,40,.18)",
+              zIndex: 2147483647, pointerEvents: "none",
+            }}
+          >
+            Saved ✓
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
