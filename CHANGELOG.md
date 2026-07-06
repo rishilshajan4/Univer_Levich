@@ -5,6 +5,33 @@ follows semantic versioning. Each release records the **exact Univer engine
 version** it bundles, so a given package version is reproducible and any release
 can be rolled back to (see constitution Principle VIII).
 
+## [0.1.2] - 2026-07-06
+
+Excel-fidelity pass on `.xlsx` import (fidelity target is **Excel**, not Google Sheets).
+
+### Added
+- **Filters** — `autoFilter` → `SHEET_FILTER_PLUGIN` (funnel dropdowns).
+- **Conditional formatting** — `conditionalFormattings` → `SHEET_CONDITIONAL_FORMATTING_PLUGIN`
+  (highlight-cell / color-scale / data-bar).
+- **Hyperlinks** — stored cell links (`mailto:`/URLs) → `SHEET_HYPER_LINK_PLUGIN`, plus
+  **auto-linkify** of plain-text single-email/URL cells.
+- **Hidden rows/columns** (`col.hidden`/`row.hidden` → `hd`), tab colours, gridline toggle.
+- **Large-font & wrapped-newline row-height** estimation; source default row-height/col-width.
+
+### Changed / Fixed
+- **Preserve source colours exactly** — removed the near-white-font guard (white-on-no-fill
+  stays invisible, matching Excel).
+- **Hidden fill-only rows** now captured (`includeEmpty:true`) — no more black-bar leak.
+- **Merged-box sizing** — skip the height bump for multi-row merges.
+- **Image anchors** treat hidden rows/cols as 0 (correct placement).
+- Excel-standard column widths / row heights; `$`-prefixed range refs parsed.
+
+### Engine
+- Univer (`@univerjs/presets`, `@univerjs/preset-sheets-core`): **0.25.0** (exact pin)
+- ExcelJS: **4.4.0**
+
+---
+
 ## [0.1.1] - 2026-07-02
 
 ### Added

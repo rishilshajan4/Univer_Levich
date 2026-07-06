@@ -41,6 +41,8 @@ interface XCell {
   value: unknown;
   /** ExcelJS resolved-formula getter — populated for shared-formula slaves too. */
   formula?: string;
+  /** Cell hyperlink target (e.g. "mailto:x@y.com" / "https://…"). */
+  hyperlink?: string | { hyperlink?: string };
   type?: number;
   numFmt?: string;
   font?: XFont;
@@ -51,11 +53,15 @@ interface XCell {
 interface XRow {
   number: number;
   height?: number;
+  hidden?: boolean;
+  outlineLevel?: number;
   eachCell(opts: { includeEmpty?: boolean }, cb: (cell: XCell, colNumber: number) => void): void;
 }
 interface XColumn {
   number?: number;
   width?: number;
+  hidden?: boolean;
+  outlineLevel?: number;
 }
 interface XAnchor { nativeCol?: number; nativeColOff?: number; nativeRow?: number; nativeRowOff?: number; col?: number; row?: number }
 interface XImageAnchor { imageId: string | number; range?: { tl?: XAnchor; br?: XAnchor; ext?: { width?: number; height?: number } } }
@@ -66,11 +72,28 @@ interface XWorksheet {
   actualColumnCount?: number;
   columns?: XColumn[];
   state?: string; // "visible" | "hidden" | "veryHidden"
-  views?: Array<{ state?: string; xSplit?: number; ySplit?: number }>;
+  views?: Array<{ state?: string; xSplit?: number; ySplit?: number; showGridLines?: boolean }>;
+  properties?: { tabColor?: Argb; defaultRowHeight?: number; defaultColWidth?: number };
+  autoFilter?: XAutoFilter;
+  conditionalFormattings?: XCfRuleSet[];
   model?: { merges?: string[] };
   eachRow(opts: { includeEmpty?: boolean }, cb: (row: XRow, rowNumber: number) => void): void;
   getImages?(): XImageAnchor[];
 }
+type XAddr = string | { row: number; column: number };
+type XAutoFilter = string | { from?: XAddr; to?: XAddr } | null;
+interface URange { startRow: number; startColumn: number; endRow: number; endColumn: number }
+interface XCfValue { type?: string; value?: number | string }
+interface XCfRule {
+  type?: string;
+  operator?: string;
+  formulae?: Array<string | number>;
+  text?: string;
+  style?: { font?: { bold?: boolean; italic?: boolean; color?: Argb }; fill?: { type?: string; pattern?: string; fgColor?: Argb; bgColor?: Argb } };
+  cfvo?: XCfValue[];
+  color?: Argb | Argb[];
+}
+interface XCfRuleSet { ref?: string; rules?: XCfRule[] }
 interface XMedia { type?: string; extension?: string; base64?: string; buffer?: Uint8Array | ArrayBuffer | { data?: number[] } }
 interface XWorkbook { worksheets: XWorksheet[]; media?: XMedia[]; model?: { media?: XMedia[] } }
 
@@ -175,12 +198,6 @@ function colorToHex(color?: Argb): string | null {
   return null;
 }
 
-/** Perceived luminance (0–255) of a hex colour. */
-function luminance(hex: string): number {
-  const [r, g, b] = hexToRgb(hex);
-  return 0.299 * r + 0.587 * g + 0.114 * b;
-}
-
 /* ---- Borders -------------------------------------------------------------- */
 const BORDER_STYLE_MAP: Record<string, number> = {
   thin: 1, hair: 2, dotted: 3, dashed: 4, dashDot: 5, dashDotDot: 6,
@@ -278,11 +295,11 @@ function buildStyle(cell: XCell, isDate: boolean): UStyle {
   if (cell.numFmt) s.n = { pattern: cell.numFmt };
   else if (isDate) s.n = { pattern: "yyyy-mm-dd" }; // date with no explicit format
 
-  // Invisible-text guard: near-white font on a cell with NO background fill is
-  // unreadable (white-on-white). This shows up in workpaper "note" blocks whose
-  // text carries a light theme colour. Drop it so the text renders in the
-  // default dark colour instead of vanishing.
-  if (s.cl && !s.bg && luminance(s.cl.rgb) > 236) delete s.cl;
+  // Preserve source colours EXACTLY for Excel fidelity: white text on no fill is
+  // invisible in Excel (a deliberate hidden label) and must stay invisible here.
+  // (An earlier guard dropped near-white fonts to "un-hide" them, but that made
+  // intentionally-hidden white labels appear — non-Excel behaviour. The theme
+  // colour swap now resolves genuine dark text correctly, so the guard is gone.)
   return s;
 }
 
@@ -293,11 +310,116 @@ interface Merge { startRow: number; startColumn: number; endRow: number; endColu
 
 /** Parse a cell address ("AB12") to 0-based { row, col }. */
 function parseAddr(addr: string): { row: number; col: number } | null {
-  const m = /^([A-Z]+)(\d+)$/.exec(addr.trim().toUpperCase());
+  const m = /^([A-Z]+)(\d+)$/.exec(addr.trim().toUpperCase().replace(/\$/g, ""));
   if (!m) return null;
   let col = 0;
   for (const ch of m[1]) col = col * 26 + (ch.charCodeAt(0) - 64);
   return { row: Number(m[2]) - 1, col: col - 1 };
+}
+
+/** Auto-detect a plain-text email / URL cell and return a link target, so it
+ *  renders clickable even when the file stored no hyperlink (Excel linkifies as
+ *  you type; exports often lose it). Only fires when the ENTIRE cell value is a
+ *  single address — NOT multi-address lists ("a@x.com, b@y.com") or prose. */
+function autoLink(v: string | number | boolean | undefined): string | null {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]{2,}$/.test(s)) return `mailto:${s}`;      // single email
+  if (/^https?:\/\/\S+$/i.test(s)) return s;                                     // http(s) URL
+  if (/^www\.[^\s]+\.[^\s]{2,}$/i.test(s)) return `https://${s}`;                // bare www URL
+  return null;
+}
+
+/** ExcelJS `autoFilter` (string "A1:N100" or {from,to}) → 0-based Univer range. */
+function parseAutoFilterRef(af: XAutoFilter | undefined): URange | null {
+  if (!af) return null;
+  const toRC = (v: XAddr): { row: number; col: number } | null =>
+    typeof v === "string" ? parseAddr(v) : v && typeof v.row === "number" ? { row: v.row - 1, col: v.column - 1 } : null;
+  let from: { row: number; col: number } | null = null;
+  let to: { row: number; col: number } | null = null;
+  if (typeof af === "string") {
+    const [a, b] = af.split(":");
+    from = parseAddr(a);
+    to = parseAddr(b ?? a);
+  } else {
+    from = af.from ? toRC(af.from) : null;
+    to = af.to ? toRC(af.to) : null;
+  }
+  if (!from || !to) return null;
+  return { startRow: from.row, startColumn: from.col, endRow: to.row, endColumn: to.col };
+}
+
+/* ---- Conditional formatting (ExcelJS rule-sets → Univer CF resource) ------- */
+const CF_NUM_OPS = new Set(["greaterThan", "greaterThanOrEqual", "lessThan", "lessThanOrEqual", "equal", "notEqual", "between", "notBetween"]);
+
+/** ExcelJS differential style (dxf) → Univer style short-keys (the format the
+ *  rule paints when it matches). */
+function cfStyle(dxf?: XCfRule["style"]): Record<string, unknown> {
+  const s: Record<string, unknown> = {};
+  const font = dxf?.font;
+  if (font) {
+    if (font.bold) s.bl = 1;
+    if (font.italic) s.it = 1;
+    const fc = colorToHex(font.color);
+    if (fc) s.cl = { rgb: fc };
+  }
+  const fill = dxf?.fill;
+  if (fill && (fill.type === "pattern" || fill.pattern)) {
+    const bg = colorToHex(fill.bgColor) ?? colorToHex(fill.fgColor); // CF fills carry the colour in bgColor
+    if (bg) s.bg = { rgb: bg };
+  }
+  return s;
+}
+
+/** A CF `ref` ("A1:A10 C1:C10", with $) → 0-based Univer ranges. */
+function parseRanges(ref?: string): URange[] {
+  if (!ref) return [];
+  const out: URange[] = [];
+  for (const part of ref.trim().split(/\s+/)) {
+    const [a, b] = part.split(":");
+    const from = parseAddr(a);
+    const to = parseAddr(b ?? a);
+    if (from && to) out.push({ startRow: from.row, startColumn: from.col, endRow: to.row, endColumn: to.col });
+  }
+  return out;
+}
+const mapCfValue = (v?: XCfValue) => ({ type: v?.type ?? "num", value: v?.value });
+
+/** Map a worksheet's ExcelJS conditional-formatting rule-sets to Univer CF
+ *  rules (highlightCell / colorScale / dataBar). */
+function readConditionalFormats(ws: XWorksheet, sheetId: string, nextId: () => number): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const colorsOf = (r: XCfRule): (Argb | undefined)[] => (Array.isArray(r.color) ? r.color : r.color ? [r.color] : []);
+  for (const set of ws.conditionalFormattings ?? []) {
+    const ranges = parseRanges(set.ref);
+    if (!ranges.length) continue;
+    for (const r of set.rules ?? []) {
+      const style = cfStyle(r.style);
+      let rule: Record<string, unknown> | null = null;
+      if (r.type === "cellIs" && r.operator && CF_NUM_OPS.has(r.operator)) {
+        const f = (r.formulae ?? []).map(Number);
+        if (r.operator === "between" || r.operator === "notBetween") {
+          if (!Number.isNaN(f[0]) && !Number.isNaN(f[1])) rule = { type: "highlightCell", subType: "number", operator: r.operator, value: [f[0], f[1]], style };
+        } else if (!Number.isNaN(f[0])) {
+          rule = { type: "highlightCell", subType: "number", operator: r.operator, value: f[0], style };
+        }
+      } else if (r.type === "expression") {
+        const f = (r.formulae ?? [])[0];
+        if (f != null) { const fs = String(f); rule = { type: "highlightCell", subType: "formula", value: fs.startsWith("=") ? fs : `=${fs}`, style }; }
+      } else if (r.type === "containsText") {
+        const opMap: Record<string, string> = { containsText: "containsText", notContains: "notContainsText", beginsWith: "beginsWith", endsWith: "endsWith" };
+        rule = { type: "highlightCell", subType: "text", operator: opMap[r.operator ?? "containsText"] ?? "containsText", value: r.text ?? String((r.formulae ?? [])[0] ?? ""), style };
+      } else if (r.type === "colorScale" && r.cfvo) {
+        const cs = colorsOf(r);
+        rule = { type: "colorScale", config: r.cfvo.map((v, i) => ({ index: i, color: colorToHex(cs[i]) ?? "#FFFFFF", value: mapCfValue(v) })) };
+      } else if (r.type === "dataBar" && r.cfvo) {
+        const bar = colorToHex(colorsOf(r)[0]) ?? "#638EC6";
+        rule = { type: "dataBar", isShowValue: true, config: { min: mapCfValue(r.cfvo[0]), max: mapCfValue(r.cfvo[1]), isGradient: true, positiveColor: bar, nativeColor: bar } };
+      }
+      if (rule) out.push({ ranges, cfId: `${sheetId}_cf_${nextId()}`, stopIfTrue: false, rule });
+    }
+  }
+  return out;
 }
 
 /** Read a worksheet's merges as 0-based ranges + a Set of slave "r:c" keys. */
@@ -547,6 +669,14 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
   // in the snapshot so images render at LOAD time (the post-load Facade insert
   // proved unreliable).
   const drawingResource: Record<string, { data: Record<string, unknown>; order: string[] }> = {};
+  // AutoFilter → SHEET_FILTER_PLUGIN resource, keyed by sheetId → { ref }.
+  const filterResource: Record<string, { ref: URange }> = {};
+  // Conditional formatting → SHEET_CONDITIONAL_FORMATTING_PLUGIN, keyed by sheetId.
+  const cfResource: Record<string, Array<Record<string, unknown>>> = {};
+  let cfSeq = 0;
+  // Cell hyperlinks (emails / URLs) → SHEET_HYPER_LINK_PLUGIN, keyed by sheetId.
+  const linkResource: Record<string, { links: Array<{ id: string; payload: string; display?: string; row: number; column: number }> }> = {};
+  let linkSeq = 0;
   const wbx = wb as unknown as XWorkbook;
   const media = wbx.media ?? wbx.model?.media ?? [];
 
@@ -555,9 +685,16 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
     sheetOrder.push(sheetId);
 
     const { merges, slaves } = readMerges(ws);
+    // Top-left cells of merges that span MULTIPLE ROWS — these already have
+    // vertical room across their rows, so we must NOT bump their row height for
+    // a big font / wrapped text (that inflates the merged box, e.g. a title box).
+    const multiRowMergeTL = new Set(merges.filter((m) => m.endRow > m.startRow).map((m) => `${m.startRow}:${m.startColumn}`));
     const cellData: Record<number, Record<number, UCell>> = {};
     // Wrapped cells (for auto-fit row-height estimation): text + font size + col.
     const wrapInfo: Array<{ r: number; c: number; text: string; fs: number }> = [];
+    // Largest font size seen per row (for large-font row-height estimation — a
+    // 20pt title in a default 24px row would otherwise clip at the top).
+    const rowMaxFs: Record<number, number> = {};
     let maxRow = 0;
     let maxCol = 0;
 
@@ -568,9 +705,16 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
         if (slaves.has(`${r}:${c}`)) return; // merge slave — leave empty
         const { v, f, isDate } = cellValue(cell);
         const style = buildStyle(cell, !!isDate);
-        if (style.tb === 3 && v !== undefined && v !== "") {
+        // Embedded newlines (Alt+Enter / programmatic exports like Carta) are
+        // multi-line even when wrapText isn't set — Excel/Sheets render them on
+        // separate lines and grow the row. Force wrap so Univer honours the
+        // breaks and the row-height estimator (below) makes room.
+        if (typeof v === "string" && v.includes("\n")) style.tb = 3;
+        const skipHeightBump = multiRowMergeTL.has(`${r}:${c}`); // merge already spans rows
+        if (style.tb === 3 && v !== undefined && v !== "" && !skipHeightBump) {
           wrapInfo.push({ r, c, text: String(v), fs: style.fs ?? 11 }); // for auto-fit
         }
+        if (v !== undefined && v !== "" && style.fs && !skipHeightBump) rowMaxFs[r] = Math.max(rowMaxFs[r] ?? 0, style.fs);
         // An EMPTY cell that still carries a date/number format makes Univer
         // format "nothing" → renders "NaN". Drop the format when there's no
         // value or formula to display.
@@ -583,16 +727,35 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
         if (v !== undefined) out.v = v;
         if (sid) out.s = sid;
         (cellData[r] ??= {})[c] = out;
+        // Cell hyperlink → Univer link resource so it renders clickable like
+        // Excel. Prefer the STORED link; otherwise auto-detect a plain-text
+        // email / URL cell and linkify it (FinSheets capability beyond the file).
+        const rawLink = typeof cell.hyperlink === "string" ? cell.hyperlink : cell.hyperlink?.hyperlink;
+        const link = rawLink || autoLink(v);
+        if (link) {
+          (linkResource[sheetId] ??= { links: [] }).links.push({
+            id: `${sheetId}_hl_${linkSeq++}`,
+            payload: link,
+            display: v !== undefined ? String(v) : link,
+            row: r,
+            column: c,
+          });
+        }
         if (r > maxRow) maxRow = r;
         if (c > maxCol) maxCol = c;
       });
     });
 
-    // Column widths.
-    const columnData: Record<number, { w: number }> = {};
+    // Column widths + hidden state. `hd: 1` hides the column (matches Excel/
+    // Sheets) — critical for layout fidelity, since many models hide helper
+    // columns and rendering them all distorts the sheet.
+    const columnData: Record<number, { w?: number; hd?: number }> = {};
     (ws.columns ?? []).forEach((col, i) => {
       const idx = (col?.number ?? i + 1) - 1;
-      if (col?.width && col.width > 0) columnData[idx] = { w: charWidthToPx(col.width) };
+      const entry: { w?: number; hd?: number } = {};
+      if (col?.width && col.width > 0) entry.w = charWidthToPx(col.width);
+      if (col?.hidden) entry.hd = 1;
+      if (entry.w !== undefined || entry.hd !== undefined) columnData[idx] = entry;
     });
 
     // Row heights. Rows with an explicit stored height are pinned as-is. For
@@ -601,9 +764,16 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
     // length vs. the available column width — Univer's own `ia` auto-fit isn't
     // computed at snapshot-load, so an explicit height is the only reliable way
     // to stop multi-line headers / notes from rendering clipped.
-    const rowData: Record<number, { h?: number }> = {};
-    ws.eachRow({ includeEmpty: false }, (row) => {
-      if (row.height && row.height > 0) rowData[row.number - 1] = { h: ptToPx(row.height) };
+    // includeEmpty:true so we capture the hidden/height state of EVERY row —
+    // including fill-only "divider" rows (a solid fill, no text). With
+    // includeEmpty:false those rows are skipped, so a hidden black-fill divider
+    // leaks through as a black bar instead of staying hidden.
+    const rowData: Record<number, { h?: number; hd?: number }> = {};
+    ws.eachRow({ includeEmpty: true }, (row) => {
+      const entry: { h?: number; hd?: number } = {};
+      if (row.height && row.height > 0) entry.h = ptToPx(row.height);
+      if (row.hidden) entry.hd = 1;
+      if (entry.h !== undefined || entry.hd !== undefined) rowData[row.number - 1] = entry;
     });
     {
       const colW = (c: number) => columnData[c]?.w ?? DEFAULT_COL_WIDTH;
@@ -627,8 +797,17 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
         const r = Number(rStr);
         if (lines > 1 && !rowData[r]?.h) {
           const lineH = Math.round((rowFs[r] ?? 11) * 1.5); // comfortable line height
-          rowData[r] = { h: Math.min(600, lines * lineH + 6) };
+          rowData[r] = { ...rowData[r], h: Math.min(600, lines * lineH + 6) };
         }
+      }
+      // Large-font single-line rows (titles/headings): the default 24px row clips
+      // a ~20pt+ title. Grow the row to fit the tallest font when no other height
+      // has been set. ptToPx(fs) is the glyph box; + padding for comfort.
+      for (const [rStr, fs] of Object.entries(rowMaxFs)) {
+        const r = Number(rStr);
+        if (rowData[r]?.h) continue; // explicit / wrap height already wins
+        const needed = ptToPx(fs) + 8;
+        if (needed > DEFAULT_ROW_HEIGHT_PX) rowData[r] = { ...rowData[r], h: Math.min(600, needed) };
       }
     }
 
@@ -636,8 +815,11 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
     // drawings anchored to cells with EMU offsets; extract source + anchor +
     // pixel size so the Facade can place them after load.
     try {
-      const colPx = (c: number) => columnData[c]?.w ?? DEFAULT_COL_WIDTH;
-      const rowPx = (r: number) => rowData[r]?.h ?? DEFAULT_ROW_HEIGHT_PX;
+      // Hidden rows/columns collapse to 0 in Univer (and Excel), so image anchor
+      // math MUST treat them as 0 — otherwise the summed pixel position is
+      // inflated by every hidden row/col above/left, scattering the images.
+      const colPx = (c: number) => (columnData[c]?.hd ? 0 : columnData[c]?.w ?? DEFAULT_COL_WIDTH);
+      const rowPx = (r: number) => (rowData[r]?.hd ? 0 : rowData[r]?.h ?? DEFAULT_ROW_HEIGHT_PX);
       const sumW = (upto: number) => { let s = 0; for (let c = 0; c < upto; c++) s += colPx(c); return s; };
       const sumH = (upto: number) => { let s = 0; for (let r = 0; r < upto; r++) s += rowPx(r); return s; };
       const posAtX = (px: number) => { let acc = 0, i = 0; while (acc + colPx(i) <= px && i < 16384) { acc += colPx(i); i++; } return { column: i, columnOffset: Math.round(px - acc) }; };
@@ -722,6 +904,21 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
     const ySplit = view?.ySplit ?? 0;
     const freeze = { xSplit, ySplit, startRow: ySplit, startColumn: xSplit };
 
+    // Tab colour + gridline visibility (Excel hides gridlines on dashboards).
+    // Only honour an EXPLICIT, non-white argb tab colour — theme-based / white
+    // values are usually a "no colour" artifact that would paint tabs white.
+    const tc = ws.properties?.tabColor?.argb ? argbToHex(ws.properties.tabColor.argb) : null;
+    const tabColor = tc && tc !== "#FFFFFF" ? tc : "";
+    const showGridlines = ws.views?.some((vw) => vw.showGridLines === false) ? 0 : 1;
+
+    // AutoFilter → filter funnels on the header row of the range.
+    const afRef = parseAutoFilterRef(ws.autoFilter);
+    if (afRef) filterResource[sheetId] = { ref: afRef };
+
+    // Conditional formatting rules for this sheet.
+    const cfRules = readConditionalFormats(ws, sheetId, () => cfSeq++);
+    if (cfRules.length) cfResource[sheetId] = cfRules;
+
     const rowCount = Math.max(maxRow + 1, ws.rowCount || 0, MIN_ROWS) + ROW_HEADROOM;
     const columnCount = Math.max(maxCol + 1, ws.actualColumnCount || ws.columnCount || 0, MIN_COLS) + COL_HEADROOM;
 
@@ -733,9 +930,15 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
       cellData,
       columnData,
       rowData,
-      defaultColumnWidth: DEFAULT_COL_WIDTH,
+      // Match the source's default row height / column width so rows & columns
+      // with no explicit size render at the same pixel size as Excel/Sheets
+      // (Univer's own default is taller → merged boxes came out oversized).
+      defaultRowHeight: ws.properties?.defaultRowHeight ? ptToPx(ws.properties.defaultRowHeight) : DEFAULT_ROW_HEIGHT_PX,
+      defaultColumnWidth: ws.properties?.defaultColWidth ? charWidthToPx(ws.properties.defaultColWidth) : DEFAULT_COL_WIDTH,
       mergeData: merges,
       freeze,
+      tabColor,
+      showGridlines,
       // Respect Excel's hidden/veryHidden sheets — imported (data preserved)
       // but not shown as tabs, matching how the source app displays them.
       hidden: ws.state && ws.state !== "visible" ? 1 : 0,
@@ -751,9 +954,11 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
 
   const baseName = file.name.replace(/\.(xlsx|xls)$/i, "") || "Imported";
   // Embed images as Univer's native drawing resource so they render at load.
-  const resources = Object.keys(drawingResource).length
-    ? [{ name: "SHEET_DRAWING_PLUGIN", data: JSON.stringify(drawingResource) }]
-    : [];
+  const resources: Array<{ name: string; data: string }> = [];
+  if (Object.keys(drawingResource).length) resources.push({ name: "SHEET_DRAWING_PLUGIN", data: JSON.stringify(drawingResource) });
+  if (Object.keys(filterResource).length) resources.push({ name: "SHEET_FILTER_PLUGIN", data: JSON.stringify(filterResource) });
+  if (Object.keys(cfResource).length) resources.push({ name: "SHEET_CONDITIONAL_FORMATTING_PLUGIN", data: JSON.stringify(cfResource) });
+  if (Object.keys(linkResource).length) resources.push({ name: "SHEET_HYPER_LINK_PLUGIN", data: JSON.stringify(linkResource) });
   return {
     id: WORKBOOK_ID,
     name: baseName,

@@ -60,6 +60,13 @@ export default function App() {
 
 See `dist/index.d.ts` for the full typed surface.
 
+## Roadmap / design docs
+
+- [`docs/VERSION-HISTORY.md`](docs/VERSION-HISTORY.md) — Google-Docs-style version
+  history design (Yjs snapshots + PostgreSQL changeset log via a future
+  `finsheets-service` backend). Currently the package is frontend-only; this doc
+  specifies the collab/history hooks the FE will expose.
+
 ## License
 
 Apache-2.0. Wraps Univer's Apache-2.0 free tier — see `NOTICE`.
