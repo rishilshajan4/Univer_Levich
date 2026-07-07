@@ -6,6 +6,22 @@ follows semantic versioning. Each release records the **exact Univer engine
 version** it bundles, so a given package version is reproducible and any release
 can be rolled back to (see constitution Principle VIII).
 
+## [0.1.4] - 2026-07-07
+
+Release-hygiene fix so consumers can pin a reproducible tag under the current name.
+
+### Fixed
+- **Version/name tag mismatch** — `v0.1.3` was tagged as the old name `@levich/univer-sheets`
+  while `main` (same 0.1.3) had already been renamed to `@levichco/finsheets`, so no tag
+  matched the current name (consumers had to install from `#main`). This cuts a fresh
+  **`v0.1.4`** from `main` under `@levichco/finsheets` — a pinnable, reproducible tag.
+
+### Added
+- **`publishConfig`** (GitHub Packages registry) so the package can be **published**
+  (`npm publish`) instead of installed via `github:` — a published install pulls only
+  `dist` + runtime deps (per the `files` allow-list), avoiding the dev build-toolchain bloat
+  a git install drags in.
+
 ## [0.1.3] - 2026-07-07
 
 The **lazy multi-sheet product** + **Version History** + **Google Fonts** release.
