@@ -1,6 +1,7 @@
 # Changelog
 
-All notable changes to `@levich/univer-sheets` are documented here. The package
+All notable changes to `@levichco/finsheets` (formerly `@levich/univer-sheets`) are
+documented here. The package
 follows semantic versioning. Each release records the **exact Univer engine
 version** it bundles, so a given package version is reproducible and any release
 can be rolled back to (see constitution Principle VIII).

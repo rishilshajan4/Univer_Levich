@@ -1,4 +1,4 @@
-# @levich/univer-sheets
+# @levichco/finsheets
 
 A reusable, fully **Levich / FinOpz-branded** spreadsheet package that wraps the
 free (Apache-2.0) [Univer](https://univer.ai) engine. Drop a Google-Sheets-style
@@ -7,7 +7,7 @@ spreadsheet into any React app with a single component — no Univer Pro, no ser
 ## Install
 
 ```bash
-npm install @levich/univer-sheets react react-dom
+npm install @levichco/finsheets react react-dom
 ```
 
 `react` and `react-dom` (>=18) are peer dependencies.
@@ -15,8 +15,8 @@ npm install @levich/univer-sheets react react-dom
 ## Usage
 
 ```tsx
-import { LevichSheet } from "@levich/univer-sheets";
-import "@levich/univer-sheets/styles.css"; // once, anywhere in your app
+import { LevichSheet } from "@levichco/finsheets";
+import "@levichco/finsheets/styles.css"; // once, anywhere in your app
 
 export default function App() {
   const columns = [

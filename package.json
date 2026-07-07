@@ -1,8 +1,16 @@
 {
-  "name": "@levich/univer-sheets",
+  "name": "@levichco/finsheets",
   "version": "0.1.3",
   "description": "Reusable, fully Levich/FinOpz-branded spreadsheet package wrapping the free (Apache-2.0) Univer engine. Embeddable with one React component: Google-Sheets-style menus & toolbar, rich .xlsx import (styles, merges, number formats, images, multi-sheet) and full-fidelity export, filter/group views, a full function catalog, cross-platform keyboard shortcuts, and Google-style sheet management.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/levichco/FinSheets.git"
+  },
+  "homepage": "https://github.com/levichco/FinSheets#readme",
+  "bugs": {
+    "url": "https://github.com/levichco/FinSheets/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
