@@ -16,6 +16,11 @@ export default defineConfig({
   server: {
     port: 9100,
   },
+  // Demo bundle goes to dist-demo/ so `demo:build` never overwrites the tsup
+  // library output in dist/ (which is what gets published).
+  build: {
+    outDir: "dist-demo",
+  },
   test: {
     globals: true,
     environment: "jsdom",

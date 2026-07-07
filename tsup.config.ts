@@ -12,7 +12,9 @@ import { defineConfig } from "tsup";
  *   constitution, Principle VI).
  */
 export default defineConfig({
-  entry: ["src/index.ts"],
+  // Two entry points: the React UI barrel (index) and the Node-safe converter
+  // core (node) — see src/node.ts. The "node" build must stay React/CSS-free.
+  entry: ["src/index.ts", "src/node.ts"],
   format: ["esm"],
   dts: true,
   sourcemap: true,

@@ -44,6 +44,8 @@ export interface VersionStore {
   listVersions(documentId: string): Promise<Version[]>;
   putVersion(documentId: string, version: Version): Promise<void>;
   getVersion(documentId: string, versionId: string): Promise<Version | undefined>;
+  /** Remove a version (used to prune old auto-checkpoints — see the host's retention policy). */
+  deleteVersion(documentId: string, versionId: string): Promise<void>;
 }
 
 const DB_NAME = "finsheets-version-history";
@@ -87,6 +89,9 @@ class MemoryVersionStore implements VersionStore {
   }
   async getVersion(documentId: string, versionId: string): Promise<Version | undefined> {
     return this.bucket(documentId).get(versionId);
+  }
+  async deleteVersion(documentId: string, versionId: string): Promise<void> {
+    this.bucket(documentId).delete(versionId);
   }
 }
 
@@ -147,6 +152,17 @@ class IdbVersionStore implements VersionStore {
       return record?.version ?? (await this.memory.getVersion(documentId, versionId));
     } catch {
       return this.memory.getVersion(documentId, versionId);
+    }
+  }
+
+  async deleteVersion(documentId: string, versionId: string): Promise<void> {
+    await this.memory.deleteVersion(documentId, versionId);
+    try {
+      const db = await this.open();
+      const tx = db.transaction(STORE, "readwrite");
+      await reqToPromise(tx.objectStore(STORE).delete(pk(documentId, versionId)));
+    } catch {
+      /* memory already dropped it */
     }
   }
 }

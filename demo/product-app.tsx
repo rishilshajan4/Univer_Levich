@@ -41,6 +41,8 @@ const COPY = params.has("copy");
 // Version history is keyed per-document so blank / sample / copy don't share a timeline.
 const DOCUMENT_ID = COPY ? `poc-doc-copy-${Date.now().toString(36)}` : SAMPLE ? "poc-doc-sample" : "poc-doc-blank";
 const COPY_KEY = "finsheets:version-copy";
+// Retention cap for auto-checkpoints (named / original / restore are never pruned).
+const MAX_AUTO_VERSIONS = 25;
 const store = createVersionStore();
 const BLANK_SHEET_ID = "sheet1";
 let versionSeqId = 0;
@@ -260,6 +262,13 @@ export function ProductApp() {
       author: "You", createdAt: Date.now(), document,
     };
     await store.putVersion(DOCUMENT_ID, version);
+    // Retention (H-1): named / original (import|blank) / restore versions are kept
+    // forever; auto-checkpoints are capped so a long editing session on a large
+    // workbook doesn't grow IndexedDB / heap without bound.
+    if (kind === "auto") {
+      const autos = (await store.listVersions(DOCUMENT_ID)).filter((v) => v.kind === "auto").sort((a, b) => a.seq - b.seq);
+      for (let i = 0; i < autos.length - MAX_AUTO_VERSIONS; i++) await store.deleteVersion(DOCUMENT_ID, autos[i].id);
+    }
     await refreshVersions();
     setCurrentVersionId(version.id);
     return version;
@@ -375,27 +384,38 @@ export function ProductApp() {
   const renderActiveRef = useRef<string | null>(null);
   renderActiveRef.current = renderActiveId;
 
+  // Cleanup for the CURRENT mount's event subscriptions + activation timers.
+  // LevichSheet remounts on every tab switch / fontsReady toggle, so we dispose
+  // the previous mount's before wiring the new one (M-5: no listener/timer leak).
+  const mountCleanup = useRef<() => void>(() => {});
   const activateActive = useCallback((api: WorkbookApi) => {
+    mountCleanup.current(); // tear down the previous mount's subscriptions/timers
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const disposers: Array<() => void> = [];
+    const track = (d: unknown) => {
+      if (typeof d === "function") disposers.push(d as () => void);
+      else if (d && typeof (d as { dispose?: unknown }).dispose === "function") disposers.push(() => (d as { dispose: () => void }).dispose());
+    };
     const go = () => {
       try {
         api.getActiveWorkbook?.()?.getSheetBySheetId?.(renderActiveRef.current ?? "")?.activate?.();
-        // Re-apply the current zoom to the freshly-activated sheet.
         if (zoomRef.current !== 100) api.getActiveWorkbook?.()?.getActiveSheet?.()?.zoom?.(zoomRef.current / 100);
       } catch { /* best-effort */ }
     };
-    go(); setTimeout(go, 60); setTimeout(go, 200);
-    // Keep the bottom-right control in sync when zoom changes from the toolbar / View menu.
-    try {
-      const ev = api.Event?.SheetZoomChanged ?? "SheetZoomChanged";
-      api.addEvent?.(ev, (p) => { if (typeof p?.zoom === "number") setZoomPct(Math.round(p.zoom * 100)); });
-    } catch { /* best-effort */ }
-    // Debounced auto-checkpoint on edit (VH auto versions). One subscription per
-    // mount; it dies with the disposed engine on remount.
-    try {
-      const ev = api.Event?.SheetEditEnded ?? "SheetEditEnded";
-      api.addEvent?.(ev, () => scheduleAutoCheckpoint());
-    } catch { /* best-effort */ }
+    go(); timers.push(setTimeout(go, 60), setTimeout(go, 200));
+    // Keep the bottom-right zoom control in sync when zoom changes elsewhere.
+    try { track(api.addEvent?.(api.Event?.SheetZoomChanged ?? "SheetZoomChanged", (p) => { if (typeof p?.zoom === "number") setZoomPct(Math.round(p.zoom * 100)); })); } catch { /* */ }
+    // Debounced auto-checkpoint on edit (VH auto versions).
+    try { track(api.addEvent?.(api.Event?.SheetEditEnded ?? "SheetEditEnded", () => scheduleAutoCheckpoint())); } catch { /* */ }
+    mountCleanup.current = () => {
+      timers.forEach(clearTimeout);
+      disposers.forEach((d) => { try { d(); } catch { /* */ } });
+      mountCleanup.current = () => {};
+    };
   }, [scheduleAutoCheckpoint]);
+
+  // Final cleanup on unmount: drop the last mount's subscriptions + the auto timer.
+  useEffect(() => () => { mountCleanup.current(); if (autoTimer.current) clearTimeout(autoTimer.current); }, []);
 
   const handleZoom = useCallback((percent: number) => {
     setZoomPct(percent);

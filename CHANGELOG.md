@@ -6,6 +6,31 @@ follows semantic versioning. Each release records the **exact Univer engine
 version** it bundles, so a given package version is reproducible and any release
 can be rolled back to (see constitution Principle VIII).
 
+## [0.1.5] - 2026-07-07
+
+Headless-safe converter entry so the backend can reuse the FE converter.
+
+### Added
+- **`@levichco/finsheets/node`** subpath — a Node-safe barrel that re-exports only
+  the pure-data converter/assembly functions (`parseXlsxToSnapshot`, `buildExcelWorkbook`,
+  `buildShellWorkbook`, `diffSheet`/`highlightSnapshot`, types) with **no React, CSS,
+  Univer UI presets, or icons**. Fixes headless import of the package in Node/tsx
+  (the main `.` barrel pulls the whole FE stack, which can't load server-side).
+  Backend: `import { parseXlsxToSnapshot } from "@levichco/finsheets/node"`.
+- Second tsup entry (`src/node.ts`) → `dist/node.js` (+ `.d.ts`), exposed via the
+  `"./node"` export condition. The React UI barrel (`.`) is unchanged.
+
+### Hardening (production-readiness audit)
+- **Version-history retention** — auto-checkpoints are now capped (named / original /
+  restore kept forever) so long sessions on large workbooks don't grow IndexedDB / heap
+  without bound; added `VersionStore.deleteVersion`.
+- **Converter tests** — added round-trip tests for `parseXlsxToSnapshot` (values, formulas,
+  bold, merges), `buildShellWorkbook`, `diffSheet`, and the `./node` entry (14 → 19 tests).
+- **Demo build isolation** — `demo:build` now emits to `dist-demo/` so it never overwrites
+  the published `dist/` library output.
+- **Leak fix** — the product app now disposes its Univer event subscriptions + activation
+  timers on remount/unmount (it remounts on every tab switch).
+
 ## [0.1.4] - 2026-07-07
 
 Release-hygiene fix so consumers can pin a reproducible tag under the current name.
