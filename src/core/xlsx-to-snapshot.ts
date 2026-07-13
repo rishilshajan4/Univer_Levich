@@ -41,6 +41,9 @@ interface XCell {
   value: unknown;
   /** ExcelJS resolved-formula getter — populated for shared-formula slaves too. */
   formula?: string;
+  /** ExcelJS cell model — carries `result` (cached value) for formula cells whose
+   *  `value.result` ExcelJS leaves undefined (notably cross-sheet-reference formulas). */
+  model?: { result?: unknown };
   /** Cell hyperlink target (e.g. "mailto:x@y.com" / "https://…"). */
   hyperlink?: string | { hyperlink?: string };
   type?: number;
@@ -236,7 +239,12 @@ function cellValue(cell: XCell): { v?: string | number | boolean; f?: string; is
     // Without it the slave came out as an empty but date-formatted cell → "NaN".
     if ((typeof cell.formula === "string" && cell.formula) || "formula" in o || "sharedFormula" in o) {
       const f = (typeof cell.formula === "string" && cell.formula) ? cell.formula : ((o.formula as string | undefined) || undefined);
-      const res = o.result;
+      // ExcelJS often omits `value.result` for cross-sheet-reference formulas but still
+      // carries the cached value on `cell.model.result`. Fall back to it so the cell keeps
+      // Excel's number instead of arriving empty — an empty formula cell is recomputed by
+      // Univer (WHEN_EMPTY), turning unsupported functions / broken refs into #NAME?/#VALUE!
+      // and slowing the initial open with tens of thousands of needless recalcs.
+      const res = o.result ?? cell.model?.result;
       const out: { v?: string | number | boolean; f?: string; isDate?: boolean } = {};
       if (f) out.f = `=${f}`;
       // Always carry the cached result as the value so the cell renders
