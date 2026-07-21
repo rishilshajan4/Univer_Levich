@@ -9,6 +9,7 @@
  */
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { Z_BASE } from "../core/z-index";
 import {
   AlignBottom01,
   AlignCenter,
@@ -210,7 +211,7 @@ const panelStyle: CSSProperties = {
   borderRadius: 10,
   boxShadow: "0 8px 24px rgba(16,24,40,0.12)",
   padding: 6,
-  zIndex: 1000,
+  zIndex: Z_BASE + 1000,
 };
 const menuItem: CSSProperties = {
   display: "flex",
@@ -238,7 +239,7 @@ const tooltipStyle: CSSProperties = {
   borderRadius: 6,
   whiteSpace: "nowrap",
   pointerEvents: "none",
-  zIndex: 1100,
+  zIndex: Z_BASE + 1100,
   boxShadow: "0 4px 12px rgba(16,24,40,0.18)",
 };
 

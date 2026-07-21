@@ -17,6 +17,7 @@
  */
 import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { Z_BASE } from "../core/z-index";
 import { FULL_FUNCTION_CATEGORIES, type CatalogFn } from "../features/function-catalog.generated";
 import type { Aggregate } from "../features/functions";
 
@@ -191,7 +192,7 @@ export function FunctionsMenu({ onQuick, onInsert, close }: FunctionsMenuProps) 
                   borderRadius: 10,
                   boxShadow: "0 8px 24px rgba(16,24,40,0.16)",
                   padding: 6,
-                  zIndex: 1200,
+                  zIndex: Z_BASE + 1200,
                   fontFamily: "'Work Sans', ui-sans-serif, system-ui, sans-serif",
                 }}
               >

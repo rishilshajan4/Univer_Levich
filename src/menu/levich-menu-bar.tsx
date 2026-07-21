@@ -7,6 +7,7 @@
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { Z_BASE } from "../core/z-index";
 import { ChevronRight } from "@untitledui/icons";
 import { exportToXlsx, type SnapshotSource } from "../core/export-xlsx";
 import { downloadCsv, downloadHtml, downloadTsv } from "../core/export-data";
@@ -127,7 +128,7 @@ function colLetter(index: number): string {
 }
 
 const menuLabel: CSSProperties = { padding: "2px 8px", borderRadius: 6, fontSize: 14, color: "#1f2937", cursor: "pointer", lineHeight: "22px" };
-const panel: CSSProperties = { background: "#fff", border: "1px solid #eaecf0", borderRadius: 10, boxShadow: "0 8px 24px rgba(16,24,40,0.14)", padding: 6, minWidth: 220, zIndex: 1000 };
+const panel: CSSProperties = { background: "#fff", border: "1px solid #eaecf0", borderRadius: 10, boxShadow: "0 8px 24px rgba(16,24,40,0.14)", padding: 6, minWidth: 220, zIndex: Z_BASE + 1000 };
 const row: CSSProperties = { display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "7px 10px", borderRadius: 6, border: "none", background: "transparent", fontSize: 13, color: "#344054", textAlign: "left", cursor: "pointer", whiteSpace: "nowrap" };
 
 function MenuItemRow({ item, onClose }: { item: MItem; onClose: () => void }) {

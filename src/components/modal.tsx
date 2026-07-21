@@ -6,6 +6,7 @@
  */
 import { type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { Z_BASE } from "../core/z-index";
 import { X } from "@untitledui/icons";
 
 const overlay: CSSProperties = {
@@ -15,7 +16,7 @@ const overlay: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  zIndex: 2000,
+  zIndex: Z_BASE + 2000,
   padding: 16,
 };
 const card: CSSProperties = {

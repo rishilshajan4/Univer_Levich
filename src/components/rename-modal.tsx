@@ -5,6 +5,7 @@
  * (the `taken` set). Enter submits, Esc / overlay-click / Cancel closes.
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Z_BASE } from "../core/z-index";
 
 export interface RenameModalProps {
   open: boolean;
@@ -18,7 +19,7 @@ export interface RenameModalProps {
   onRename: (name: string) => void;
 }
 
-const overlay: CSSProperties = { position: "fixed", inset: 0, background: "rgba(16,24,40,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 4000 };
+const overlay: CSSProperties = { position: "fixed", inset: 0, background: "rgba(16,24,40,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: Z_BASE + 4000 };
 const card: CSSProperties = { width: 420, maxWidth: "92vw", background: "#fff", borderRadius: 14, boxShadow: "0 20px 48px rgba(16,24,40,0.28)", padding: "22px 24px", fontFamily: "'Work Sans', ui-sans-serif, system-ui, sans-serif" };
 
 export function RenameModal({ open, title = "Rename", current, taken, onCancel, onRename }: RenameModalProps) {

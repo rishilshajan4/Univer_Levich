@@ -7,6 +7,7 @@
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { Z_BASE } from "../core/z-index";
 import { stashSnapshotPayload } from "../core/import-data";
 import { RenameModal } from "../components/rename-modal";
 
@@ -56,7 +57,7 @@ const panel: CSSProperties = {
   borderRadius: 10,
   boxShadow: "0 12px 32px rgba(16,24,40,0.16)",
   padding: 6,
-  zIndex: 4000,
+  zIndex: Z_BASE + 4000,
   fontFamily: "'Work Sans', ui-sans-serif, system-ui, sans-serif",
 };
 const item: CSSProperties = {

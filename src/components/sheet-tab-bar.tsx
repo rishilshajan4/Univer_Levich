@@ -15,6 +15,7 @@
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { Z_BASE } from "../core/z-index";
 import { ChevronDown, ChevronLeft, ChevronRight, Copy01, Edit01, EyeOff, Grid01, Menu01, Palette, Plus, SearchMd, Trash01, ZoomIn, ZoomOut } from "@untitledui/icons";
 import { RenameModal } from "./rename-modal";
 import { ConfirmModal } from "./modal";
@@ -92,7 +93,7 @@ const iconBtn: CSSProperties = {
 };
 const panel: CSSProperties = {
   position: "fixed", minWidth: 200, background: "#fff", border: "1px solid #eaecf0", borderRadius: 10,
-  boxShadow: "0 12px 32px rgba(16,24,40,0.16)", padding: 6, zIndex: 4000,
+  boxShadow: "0 12px 32px rgba(16,24,40,0.16)", padding: 6, zIndex: Z_BASE + 4000,
   fontFamily: "'Work Sans', ui-sans-serif, system-ui, sans-serif",
 };
 const itemStyle: CSSProperties = {
