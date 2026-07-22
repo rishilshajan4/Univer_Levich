@@ -1011,8 +1011,17 @@ export async function parseXlsxToSnapshot(file: File): Promise<ParsedSnapshot> {
   // in `pivotInteractive` mode. Best-effort — never blocks the import.
   try {
     const { parsePivotsFromXlsx } = await import("./pivot-import");
+    const { attachPivotsResource } = await import("./pivots-resource");
     const pivots = await parsePivotsFromXlsx(rawBytes, snapshot);
-    if (pivots.length) snapshot.pivotsImport = pivots;
+    if (pivots.length) {
+      // Escape-hatch top-level key (dropped on Univer round-trip) — kept for the
+      // same-session Facade path that reads it immediately after import.
+      snapshot.pivotsImport = pivots;
+      // Durable copy: a `resources` entry Univer preserves across save/load, so a
+      // host can re-open imported pivots interactively on ANY open, not just the
+      // import session. See `pivots-resource.ts`.
+      attachPivotsResource(snapshot, pivots);
+    }
   } catch (e) {
     console.warn("[levich] pivot reconstruction failed", e);
   }

@@ -23,6 +23,11 @@ export type { ImportImage, ParsedSnapshot } from "./core/xlsx-to-snapshot";
 export { parsePivotsFromXlsx, mapSubtotal } from "./core/pivot-import";
 export type { ImportedPivot } from "./core/pivot-import";
 
+// Durable persistence of reconstructed pivots via a Univer `resources` entry that
+// round-trips through save/load — so a host can re-open imported pivots on ANY
+// open, not just the import session. Pure data; safe headless.
+export { PIVOTS_IMPORT_RESOURCE, attachPivotsResource, readPivotsResource } from "./core/pivots-resource";
+
 // Univer snapshot → ExcelJS workbook (Node-safe primitive). NOTE: `exportToXlsx`
 // is intentionally NOT re-exported — it triggers a browser download (DOM). Use
 // `buildExcelWorkbook(...).workbook.xlsx.writeBuffer()` to emit bytes headlessly.

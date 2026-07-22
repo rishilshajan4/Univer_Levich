@@ -8,6 +8,7 @@ export { parseXlsxToSnapshot } from "./core/xlsx-to-snapshot";
 export type { ParsedSnapshot } from "./core/xlsx-to-snapshot";
 export { parsePivotsFromXlsx, mapSubtotal } from "./core/pivot-import";
 export type { ImportedPivot } from "./core/pivot-import";
+export { PIVOTS_IMPORT_RESOURCE, attachPivotsResource, readPivotsResource } from "./core/pivots-resource";
 export { buildShellWorkbook } from "./core/shell-workbook";
 export { GOOGLE_FONTS, ensureGoogleFont, ensureGoogleFonts, ensureFontsForSnapshot, fontsInSnapshot } from "./theme/google-fonts";
 export type { SheetManifestEntry, SingleSheetSnapshot, BuildShellWorkbookParams } from "./core/shell-workbook";
