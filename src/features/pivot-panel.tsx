@@ -240,9 +240,9 @@ export function PivotPanel({ fields, spec, onChange, onClose }: PivotPanelProps)
   const removeChip = (field: string) => onChange(removeField(spec, field));
 
   return (
-    <aside style={drawer} role="dialog" aria-label="PivotTable fields">
+    <aside style={drawer} role="dialog" aria-label="Pivot table editor">
       <header style={header}>
-        <span style={titleStyle}>PivotTable Fields</span>
+        <span style={titleStyle}>Pivot table editor</span>
         {onClose && (
           <button type="button" aria-label="Close" onClick={onClose} style={closeBtn}>
             <X size={18} />

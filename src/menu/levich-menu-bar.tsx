@@ -223,9 +223,12 @@ export interface LevichMenuBarProps {
   hiddenSheetList?: Array<{ sheetId: string; name: string }>;
   /** Whether the active sheet can be hidden (host-driven). */
   canHideActiveSheet?: boolean;
+  /** Insert ▸ Pivot table — host hook that opens the "Create pivot table" flow.
+   *  When omitted the menu item stays disabled (matches Google Sheets' entry point). */
+  onInsertPivot?: () => void;
 }
 
-export function LevichMenuBar({ api, onDownload, onOpenFind, onSave, onNew, onImport, onImportFile, onMakeCopy, onRename, onHideActiveSheet, onShowSheet, hiddenSheetList, canHideActiveSheet }: LevichMenuBarProps) {
+export function LevichMenuBar({ api, onDownload, onOpenFind, onSave, onNew, onImport, onImportFile, onMakeCopy, onRename, onHideActiveSheet, onShowSheet, hiddenSheetList, canHideActiveSheet, onInsertPivot }: LevichMenuBarProps) {
   const [openMenu, setOpenMenu] = useState<number | null>(null);
   // Transient "Saved" toast (File ▸ Save / ⌘S).
   const [saved, setSaved] = useState(false);
@@ -671,7 +674,7 @@ export function LevichMenuBar({ api, onDownload, onOpenFind, onSave, onNew, onIm
         { label: "Note", onClick: () => exec("sheet.command.toggle-note-popup"), sep: true },
         { label: "Link", onClick: () => exec("sheet.operation.insert-hyper-link") },
         { label: "Chart", disabled: true, sep: true },
-        { label: "Pivot table", disabled: true },
+        { label: "Pivot table", disabled: !onInsertPivot, onClick: onInsertPivot },
         { label: "Image", disabled: true },
       ],
     },

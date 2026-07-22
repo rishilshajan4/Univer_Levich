@@ -83,7 +83,7 @@ function collapsibleRowPaths(model: ReturnType<typeof computePivotModel>): Map<n
 }
 
 export const LevichSheet = forwardRef<LevichSheetHandle, LevichSheetProps>(function LevichSheet(props, ref) {
-  const { data, columns, snapshot, anchorCell, freeze, pivot, pivotInteractive, footer, currencySymbol, comments, columnWidths, getRowKey, toolbar, sheetBar, readOnly, className, onCellEdit, onColumnWidthsChange, onReady, onImport, onImportFile, onSave, onDownload, onNew, onMakeCopy, onRename, onCopyToExisting, onHideActiveSheet, onShowSheet, hiddenSheetList, canHideActiveSheet } = props;
+  const { data, columns, snapshot, anchorCell, freeze, pivot, pivotInteractive, footer, currencySymbol, comments, columnWidths, getRowKey, toolbar, sheetBar, readOnly, className, onCellEdit, onColumnWidthsChange, onReady, onImport, onImportFile, onSave, onDownload, onNew, onMakeCopy, onRename, onCopyToExisting, onHideActiveSheet, onShowSheet, hiddenSheetList, canHideActiveSheet, onInsertPivot } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const univerRef = useRef<{ dispose: () => void } | null>(null);
@@ -467,7 +467,7 @@ export const LevichSheet = forwardRef<LevichSheetHandle, LevichSheetProps>(funct
 
   return (
     <div className={className ?? "levich-sheet"} style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", minHeight: 0 }}>
-      <LevichMenuBar api={toolbarApi} onOpenFind={() => setFindOpen(true)} onImport={onImport} onImportFile={onImportFile} onSave={onSave} onDownload={onDownload} onNew={onNew} onMakeCopy={onMakeCopy} onRename={onRename} onHideActiveSheet={onHideActiveSheet} onShowSheet={onShowSheet} hiddenSheetList={hiddenSheetList} canHideActiveSheet={canHideActiveSheet} />
+      <LevichMenuBar api={toolbarApi} onOpenFind={() => setFindOpen(true)} onImport={onImport} onImportFile={onImportFile} onSave={onSave} onDownload={onDownload} onNew={onNew} onMakeCopy={onMakeCopy} onRename={onRename} onHideActiveSheet={onHideActiveSheet} onShowSheet={onShowSheet} hiddenSheetList={hiddenSheetList} canHideActiveSheet={canHideActiveSheet} onInsertPivot={onInsertPivot} />
       <LevichToolbar api={toolbarApi} onOpenFind={() => setFindOpen(true)} />
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
@@ -480,7 +480,10 @@ export const LevichSheet = forwardRef<LevichSheetHandle, LevichSheetProps>(funct
           <PivotPanel
             fields={pivotInteractive.source.fields}
             spec={pivotSpec}
-            onChange={setPivotSpec}
+            onChange={(next) => {
+              setPivotSpec(next);
+              pivotInteractive.onSpecChange?.(next); // let the host persist the layout
+            }}
             onClose={() => setPivotOpen(false)}
           />
         )}
