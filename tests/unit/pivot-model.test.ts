@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { computePivotModel, renderPivotModel } from "../../src/features/pivot-model";
-import type { PivotSource, PivotSpec } from "../../src/core/types";
+import { ROW_TOTAL, computePivotModel, renderPivotModel } from "../../src/features/pivot-model";
+import type { PivotAggregate, PivotSource, PivotSpec } from "../../src/core/types";
+
+describe("row Total with a BLANK column-field value (regression: must include the blank column)", () => {
+    it("counts the blank-column data in the row Total + grand (not dropped)", () => {
+        const src: PivotSource = {
+            fields: ["region", "type", "amount"],
+            rows: [
+                { region: "X", type: "P", amount: 10 }, // column value present
+                { region: "X", type: "", amount: 100 }, // BLANK column value → path ""
+                { region: "Y", type: "P", amount: 5 },
+            ],
+        };
+        const m = computePivotModel(src, { rows: ["region"], columns: ["type"], values: [{ field: "amount", aggregate: "sum" }] });
+        const x = m.rowTree.find((n) => n.key === "X")!;
+        // X row Total must be 10 + 100 = 110 (the blank-"type" 100 is NOT dropped).
+        expect(x.values.get(`${ROW_TOTAL}␟0`)).toBe(110);
+        // Grand row Total = 110 + 5 = 115.
+        expect(m.grand.get(`${ROW_TOTAL}␟0`)).toBe(115);
+        // The real "P" column still reads correctly (X=10).
+        expect(x.values.get(`P␟0`)).toBe(10);
+    });
+});
 
 const source: PivotSource = {
   fields: ["region", "product", "amount"],
@@ -18,11 +39,11 @@ describe("computePivotModel", () => {
     const spec: PivotSpec = { rows: ["region", "product"], columns: [], values: [{ field: "amount", aggregate: "sum" }] };
     const m = computePivotModel(source, spec);
     const west = m.rowTree.find((n) => n.key === "West")!;
-    const total = (n: typeof west) => n.values.get(`␟0`); // cellKey("", 0)
+    const total = (n: typeof west) => n.values.get(`${ROW_TOTAL}␟0`); // cellKey("", 0)
     expect(total(west)).toBe(180); // 100+50+30 — subtotal over underlying values
     const westA = west.children.find((n) => n.key === "A")!;
     expect(total(westA)).toBe(150);
-    expect(m.grand.get(`␟0`)).toBe(400); // 180 + 220
+    expect(m.grand.get(`${ROW_TOTAL}␟0`)).toBe(400); // 180 + 220
   });
 
   it("average TOTAL is over the union of underlying values, not an average-of-averages (Excel-exact)", () => {
@@ -31,9 +52,9 @@ describe("computePivotModel", () => {
     const west = m.rowTree.find((n) => n.key === "West")!;
     // West: A avg = (100+50)/2 = 75; B avg = 30. Row TOTAL avg must be (100+50+30)/3 = 60,
     // NOT (75+30)/2 = 52.5.
-    expect(west.values.get(`␟0`)).toBeCloseTo(60, 6);
+    expect(west.values.get(`${ROW_TOTAL}␟0`)).toBeCloseTo(60, 6);
     // Grand average over all 5 rows = 400/5 = 80.
-    expect(m.grand.get(`␟0`)).toBeCloseTo(80, 6);
+    expect(m.grand.get(`${ROW_TOTAL}␟0`)).toBeCloseTo(80, 6);
   });
 
   it("min/max ignore non-numeric cells (Excel-consistent — a stray 'N/A' must not poison the group)", () => {
@@ -47,8 +68,8 @@ describe("computePivotModel", () => {
     };
     const min = computePivotModel(src, { rows: ["region"], columns: [], values: [{ field: "amount", aggregate: "min" }] });
     const max = computePivotModel(src, { rows: ["region"], columns: [], values: [{ field: "amount", aggregate: "max" }] });
-    expect(min.rowTree[0].values.get(`␟0`)).toBe(40); // not NaN
-    expect(max.rowTree[0].values.get(`␟0`)).toBe(100); // not NaN
+    expect(min.rowTree[0].values.get(`${ROW_TOTAL}␟0`)).toBe(40); // not NaN
+    expect(max.rowTree[0].values.get(`${ROW_TOTAL}␟0`)).toBe(100); // not NaN
   });
 
   it("supports multiple value fields with independent aggregations", () => {
@@ -62,8 +83,118 @@ describe("computePivotModel", () => {
     };
     const m = computePivotModel(source, spec);
     const west = m.rowTree.find((n) => n.key === "West")!;
-    expect(west.values.get(`␟0`)).toBe(180); // sum
-    expect(west.values.get(`␟1`)).toBe(3); // count
+    expect(west.values.get(`${ROW_TOTAL}␟0`)).toBe(180); // sum
+    expect(west.values.get(`${ROW_TOTAL}␟1`)).toBe(3); // count
+  });
+});
+
+/** Brute-force reference: scan the raw rows for a (rowPath-prefix, colPath|null)
+ *  group and aggregate directly — the O(n²) definition we optimise away. */
+function bruteAgg(
+  rows: Array<Record<string, unknown>>,
+  rowFields: string[],
+  colFields: string[],
+  rowPrefix: string[] | null,
+  colPath: string[] | null,
+  field: string,
+  agg: PivotAggregate,
+): number {
+  const nums: number[] = [];
+  for (const r of rows) {
+    if (rowPrefix) {
+      let ok = true;
+      for (let i = 0; i < rowPrefix.length; i++) if (String(r[rowFields[i]] ?? "") !== rowPrefix[i]) { ok = false; break; }
+      if (!ok) continue;
+    }
+    if (colPath) {
+      let ok = true;
+      for (let i = 0; i < colPath.length; i++) if (String(r[colFields[i]] ?? "") !== colPath[i]) { ok = false; break; }
+      if (!ok) continue;
+    }
+    const v = r[field];
+    const n = typeof v === "number" ? v : Number(v);
+    nums.push(Number.isFinite(n) ? n : NaN);
+  }
+  switch (agg) {
+    case "count": return nums.length;
+    case "countNumbers": return nums.filter(Number.isFinite).length;
+    case "average": { const f = nums.filter(Number.isFinite); return f.length ? f.reduce((s, x) => s + x, 0) / f.length : 0; }
+    case "min": { const f = nums.filter(Number.isFinite); return f.length ? Math.min(...f) : 0; }
+    case "max": { const f = nums.filter(Number.isFinite); return f.length ? Math.max(...f) : 0; }
+    default: return nums.reduce((s, x) => s + (Number.isFinite(x) ? x : 0), 0);
+  }
+}
+
+describe("computePivotModel — roll-up accumulators", () => {
+  it("matches a brute-force reference on a small multi-level, multi-col, multi-value case", () => {
+    const src: PivotSource = {
+      fields: ["region", "product", "year", "amount"],
+      rows: [
+        { region: "West", product: "A", year: "2023", amount: 100 },
+        { region: "West", product: "A", year: "2024", amount: 50 },
+        { region: "West", product: "B", year: "2023", amount: 30 },
+        { region: "West", product: "B", year: "2024", amount: "N/A" },
+        { region: "East", product: "A", year: "2023", amount: 200 },
+        { region: "East", product: "A", year: "2024", amount: 20 },
+        { region: "East", product: "B", year: "2023", amount: 5 },
+      ],
+    };
+    const aggs: PivotAggregate[] = ["sum", "count", "average", "min", "max", "countNumbers"];
+    for (const agg of aggs) {
+      const spec: PivotSpec = { rows: ["region", "product"], columns: ["year"], values: [{ field: "amount", aggregate: agg }] };
+      const m = computePivotModel(src, spec);
+      const cols = m.colLeaves.filter((c) => c !== "");
+      for (const region of m.rowTree) {
+        // node level
+        for (const col of cols) {
+          expect(region.values.get(`${col}␟0`)).toBeCloseTo(bruteAgg(src.rows, spec.rows, spec.columns, [region.key], col.split("␟"), "amount", agg), 6);
+        }
+        // row Total (all columns)
+        expect(region.values.get(`${ROW_TOTAL}␟0`)).toBeCloseTo(bruteAgg(src.rows, spec.rows, spec.columns, [region.key], null, "amount", agg), 6);
+        for (const prod of region.children) {
+          expect(prod.values.get(`${ROW_TOTAL}␟0`)).toBeCloseTo(bruteAgg(src.rows, spec.rows, spec.columns, [region.key, prod.key], null, "amount", agg), 6);
+        }
+      }
+      // grand
+      expect(m.grand.get(`${ROW_TOTAL}␟0`)).toBeCloseTo(bruteAgg(src.rows, spec.rows, spec.columns, null, null, "amount", agg), 6);
+    }
+  });
+
+  it("computes a 5k-row × 3-level × 2-col × 2-value pivot in well under a second", () => {
+    const rows: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 5000; i++) {
+      rows.push({
+        region: `R${i % 4}`,
+        product: `P${i % 10}`,
+        sku: `S${i % 25}`,
+        quarter: `Q${i % 4}`,
+        channel: `C${i % 3}`,
+        amount: (i % 97) + 1,
+        qty: (i % 13) + 1,
+      });
+    }
+    const src: PivotSource = { fields: Object.keys(rows[0]), rows };
+    const spec: PivotSpec = {
+      rows: ["region", "product", "sku"],
+      columns: ["quarter", "channel"],
+      values: [
+        { field: "amount", aggregate: "sum" },
+        { field: "qty", aggregate: "average" },
+      ],
+    };
+    const t0 = performance.now();
+    const m = computePivotModel(src, spec);
+    const ms = performance.now() - t0;
+    expect(m.rowTree.length).toBe(4);
+    expect(ms).toBeLessThan(1000);
+
+    // Spot-check exactness against brute force on one deep node + grand.
+    const first = m.rowTree[0].children[0].children[0];
+    expect(first.values.get(`${ROW_TOTAL}␟0`)).toBeCloseTo(
+      bruteAgg(rows, spec.rows, spec.columns, [m.rowTree[0].key, m.rowTree[0].children[0].key, first.key], null, "amount", "sum"),
+      6,
+    );
+    expect(m.grand.get(`${ROW_TOTAL}␟1`)).toBeCloseTo(bruteAgg(rows, spec.rows, spec.columns, null, null, "qty", "average"), 6);
   });
 });
 

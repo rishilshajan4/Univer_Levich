@@ -16,7 +16,12 @@
 
 // .xlsx → Univer snapshot (exceljs is dynamically imported; no DOM at load).
 export { parseXlsxToSnapshot, sheetIndexToName, inlineSheetStyles, firstVisibleSheet } from "./core/xlsx-to-snapshot";
-export type { ImportImage } from "./core/xlsx-to-snapshot";
+export type { ImportImage, ParsedSnapshot } from "./core/xlsx-to-snapshot";
+
+// Interactive-pivot reconstruction from imported .xlsx (jszip/saxes are dynamically
+// imported — both Node-native, transitive via exceljs — so this stays headless).
+export { parsePivotsFromXlsx, mapSubtotal } from "./core/pivot-import";
+export type { ImportedPivot } from "./core/pivot-import";
 
 // Univer snapshot → ExcelJS workbook (Node-safe primitive). NOTE: `exportToXlsx`
 // is intentionally NOT re-exported — it triggers a browser download (DOM). Use

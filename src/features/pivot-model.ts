@@ -14,6 +14,9 @@ import { ALIGN_RIGHT, NUMBER_PATTERN } from "./formatting";
 import type { Cell, CellStyle, PivotAggregate, PivotModel, PivotNode, PivotSource, PivotSpec, PivotValueField } from "../core/types";
 
 const SEP = "␟"; // ␟ — a path separator that won't collide with real field values.
+// Dedicated colPath for the row-Total column. A NUL byte can't appear in a stringified
+// cell value, so this never collides with a real (or blank) column-field path.
+export const ROW_TOTAL = "\u0000TOTAL";
 
 function aggregate(values: number[], agg: PivotAggregate): number {
   const nums = values;
@@ -39,6 +42,65 @@ function aggregate(values: number[], agg: PivotAggregate): number {
     case "sum":
     default:
       return nums.reduce((s, x) => s + (Number.isFinite(x) ? x : 0), 0);
+  }
+}
+
+/* ─── Mergeable accumulators ──────────────────────────────────────────────────
+   To make deep pivots fast we compute a per-(col,value) accumulator ONCE at each
+   LEAF and then ROLL UP bottom-up: a parent's accumulator is the O(children)
+   merge of its children's accumulators — never a re-scan of all descendant leaves.
+   Each aggregate keeps just enough SUFFICIENT STATISTICS to be exact after
+   merging (sum keeps a running sum; count keeps n; average keeps {sum,n} over
+   finite values; min/max keep the running extreme; countNumbers keeps the
+   finite-count). This yields the SAME result as scanning the raw union of values
+   (so average totals = avg of ALL underlying values, min/max ignore non-numbers),
+   at ~O(rows × depth) instead of ~O(rows × depth × cols × values). */
+interface Acc {
+  sum: number; // Σ of finite values (for "sum" / "average").
+  n: number; // total observations (for "count").
+  fn: number; // finite-value count (for "countNumbers" / "average").
+  min: number; // running min over finite values (Infinity if none seen).
+  max: number; // running max over finite values (-Infinity if none seen).
+}
+const newAcc = (): Acc => ({ sum: 0, n: 0, fn: 0, min: Infinity, max: -Infinity });
+
+/** Fold one raw value into an accumulator. */
+function pushAcc(a: Acc, x: number): void {
+  a.n += 1;
+  if (Number.isFinite(x)) {
+    a.sum += x;
+    a.fn += 1;
+    if (x < a.min) a.min = x;
+    if (x > a.max) a.max = x;
+  }
+}
+
+/** Merge `src` INTO `dst` in O(1) — associative + commutative, so roll-up order
+ *  doesn't matter and a parent = merge of its children = merge of all its leaves. */
+function mergeAcc(dst: Acc, src: Acc): void {
+  dst.sum += src.sum;
+  dst.n += src.n;
+  dst.fn += src.fn;
+  if (src.min < dst.min) dst.min = src.min;
+  if (src.max > dst.max) dst.max = src.max;
+}
+
+/** Read the final aggregate out of an accumulator (matches `aggregate()` exactly). */
+function readAcc(a: Acc, agg: PivotAggregate): number {
+  switch (agg) {
+    case "count":
+      return a.n;
+    case "countNumbers":
+      return a.fn;
+    case "average":
+      return a.fn ? a.sum / a.fn : 0;
+    case "min":
+      return a.fn ? a.min : 0;
+    case "max":
+      return a.fn ? a.max : 0;
+    case "sum":
+    default:
+      return a.sum;
   }
 }
 
@@ -69,8 +131,18 @@ export function computePivotModel(source: PivotSource, spec: PivotSpec): PivotMo
   const filters = spec.filters ?? [];
   const rows = source.rows.filter((r) => filters.every((f) => !f.include || f.include.includes(String(r[f.field] ?? ""))));
 
-  // 2. Raw value buckets: rowLeafPath → colLeafPath → valueIndex → number[].
-  const raw = new Map<string, Map<string, number[][]>>();
+  const nValues = values.length;
+  // Cell key: `${colPath}${SEP}${vi}`. The row Total column uses a DEDICATED sentinel
+  // colPath (ROW_TOTAL) that can never equal a real column path — including the ""
+  // path produced by a column field whose VALUE is blank — so the two never collide.
+  const cellKey = (colPath: string, vi: number) => `${colPath}${SEP}${vi}`;
+
+  // 2. Per-LEAF accumulators, computed ONCE per row: rowLeafPath → colLeafPath →
+  //    valueIndex → Acc (sufficient statistics). This is the single scan of the
+  //    underlying data; everything above rolls these UP without re-scanning.
+  //    An `AccGroup` is the array of accumulators for one (rowLeaf,colLeaf) cell.
+  type AccGroup = Acc[]; // length nValues
+  const rawAcc = new Map<string, Map<string, AccGroup>>();
   const rowLeafOrder: string[] = [];
   const colLeafSet = new Map<string, string[]>(); // colPath → the ordered key parts (for header tree)
   const seenRowLeaf = new Set<string>();
@@ -88,45 +160,54 @@ export function computePivotModel(source: PivotSource, spec: PivotSpec): PivotMo
       rowLeafOrder.push(rl.path);
     }
     if (!colLeafSet.has(cl.path)) colLeafSet.set(cl.path, cl.parts);
-    if (!raw.has(rl.path)) raw.set(rl.path, new Map());
-    const byCol = raw.get(rl.path)!;
-    if (!byCol.has(cl.path)) byCol.set(cl.path, values.map(() => []));
-    const vArr = byCol.get(cl.path)!;
-    values.forEach((v, vi) => vArr[vi].push(num(r[v.field])));
+    let byCol = rawAcc.get(rl.path);
+    if (!byCol) rawAcc.set(rl.path, (byCol = new Map()));
+    let grp = byCol.get(cl.path);
+    if (!grp) {
+      grp = new Array(nValues);
+      for (let vi = 0; vi < nValues; vi++) grp[vi] = newAcc();
+      byCol.set(cl.path, grp);
+    }
+    for (let vi = 0; vi < nValues; vi++) pushAcc(grp[vi], num(r[values[vi].field]));
   }
 
   const colLeaves = [...colLeafSet.keys()];
 
-  // 3. Aggregate a set of rowLeafPaths across a colPath + valueIndex. `colPath === null`
-  //    means "all columns" — the raw underlying values are UNIONED across every column so
-  //    the row/grand Total is exact for every aggregation (an average total is the average
-  //    of all underlying values, NOT an average of the per-column averages — like Excel).
-  const aggFor = (rowLeaves: string[], colPath: string | null, vi: number): number => {
-    const acc: number[] = [];
-    for (const rl of rowLeaves) {
-      const byCol = raw.get(rl);
-      if (!byCol) continue;
-      if (colPath === null) {
-        for (const arr of byCol.values()) for (const n of arr[vi]) acc.push(n);
-      } else {
-        const arr = byCol.get(colPath)?.[vi];
-        if (arr) for (const n of arr) acc.push(n);
-      }
-    }
-    return aggregate(acc, values[vi].aggregate);
-  };
-  // Cell key: `${colPath}${SEP}${vi}` (colPath="" for the row Total column).
-  const cellKey = (colPath: string, vi: number) => `${colPath}${SEP}${vi}`;
+  // Roll a rowLeaf's per-column groups into a single "row Total" (all columns
+  // unioned) group — merging accumulators, so an average Total is the average of
+  // ALL underlying values, NOT an average of per-column averages (Excel-exact).
+  // Stored under the dedicated ROW_TOTAL colPath so it NEVER collides with a real
+  // column path — including the "" path a blank column-field value produces (that
+  // blank data must still be counted in the Total, which the old ""-keyed total
+  // wrongly dropped). Always built; render decides whether to show the Total column.
+  const rowTotalAcc = new Map<string, AccGroup>();
+  for (const [rl, byCol] of rawAcc) {
+    const tot: AccGroup = new Array(nValues);
+    for (let vi = 0; vi < nValues; vi++) tot[vi] = newAcc();
+    for (const grp of byCol.values()) for (let vi = 0; vi < nValues; vi++) mergeAcc(tot[vi], grp[vi]);
+    rowTotalAcc.set(rl, tot);
+  }
 
-  // 4. Build the nested row tree from the ordered leaf paths.
+  // 3. Build the nested row tree from the ordered leaf paths.
   interface Build {
     key: string;
     path: string;
     level: number;
     children: Map<string, Build>;
     childOrder: string[];
-    leaves: string[]; // rowLeafPaths under this node
+    leaves: string[]; // rowLeafPaths directly at this node (only populated on true leaves)
+    /** Rolled-up accumulators: colLeafPath → per-value Acc, plus "" = row Total. */
+    acc: Map<string, AccGroup>;
   }
+  const makeBuild = (key: string, path: string, level: number): Build => ({
+    key,
+    path,
+    level,
+    children: new Map(),
+    childOrder: [],
+    leaves: [],
+    acc: new Map(),
+  });
   const rootChildren = new Map<string, Build>();
   const rootOrder: string[] = [];
   for (const leaf of rowLeafOrder) {
@@ -134,39 +215,71 @@ export function computePivotModel(source: PivotSource, spec: PivotSpec): PivotMo
     let map = rootChildren;
     let order = rootOrder;
     let prefix = "";
+    let node: Build | undefined;
     for (let lvl = 0; lvl < parts.length; lvl++) {
       const key = parts[lvl];
       prefix = lvl === 0 ? key : `${prefix}${SEP}${key}`;
-      if (!map.has(key)) {
-        map.set(key, { key, path: prefix, level: lvl, children: new Map(), childOrder: [], leaves: [] });
+      node = map.get(key);
+      if (!node) {
+        node = makeBuild(key, prefix, lvl);
+        map.set(key, node);
         order.push(key);
       }
-      const node = map.get(key)!;
-      node.leaves.push(leaf);
       map = node.children;
       order = node.childOrder;
     }
+    // `node` is now the true-leaf Build for this rowLeaf path.
+    if (node) node.leaves.push(leaf);
   }
 
+  // Merge one leaf's accumulators (per column + row Total) into a node's acc map.
+  const ensureGroup = (m: Map<string, AccGroup>, colPath: string): AccGroup => {
+    let g = m.get(colPath);
+    if (!g) {
+      g = new Array(nValues);
+      for (let vi = 0; vi < nValues; vi++) g[vi] = newAcc();
+      m.set(colPath, g);
+    }
+    return g;
+  };
+  const mergeGroupInto = (dst: Map<string, AccGroup>, colPath: string, src: AccGroup): void => {
+    const g = ensureGroup(dst, colPath);
+    for (let vi = 0; vi < nValues; vi++) mergeAcc(g[vi], src[vi]);
+  };
+
+  // Bottom-up finalize: a parent's accumulators are the O(children) merge of its
+  // children's — descendants are NEVER re-scanned.
   const finalize = (b: Build): PivotNode => {
-    const node: PivotNode = { key: b.key, path: b.path, level: b.level, children: [], values: new Map() };
-    // Aggregate this node across every column leaf + the row Total (all columns unioned).
-    values.forEach((_, vi) => {
-      for (const col of colLeaves) node.values.set(cellKey(col, vi), aggFor(b.leaves, col, vi));
-      node.values.set(cellKey("", vi), aggFor(b.leaves, null, vi));
-    });
-    node.children = b.childOrder.map((k) => finalize(b.children.get(k)!));
+    const children = b.childOrder.map((k) => finalize(b.children.get(k)!));
+    // Seed this node's accumulators from its own direct leaves (true leaves only).
+    for (const leaf of b.leaves) {
+      const byCol = rawAcc.get(leaf);
+      if (byCol) for (const [col, grp] of byCol) mergeGroupInto(b.acc, col, grp);
+      const tot = rowTotalAcc.get(leaf);      if (tot) mergeGroupInto(b.acc, ROW_TOTAL, tot);
+    }
+    // Merge each child's rolled-up accumulators upward.
+    for (let i = 0; i < children.length; i++) {
+      const cb = b.children.get(b.childOrder[i])!;
+      for (const [col, grp] of cb.acc) mergeGroupInto(b.acc, col, grp);
+    }
+    const node: PivotNode = { key: b.key, path: b.path, level: b.level, children, values: new Map() };
+    for (const [col, grp] of b.acc) for (let vi = 0; vi < nValues; vi++) node.values.set(cellKey(col, vi), readAcc(grp[vi], values[vi].aggregate));
+    // Guarantee zero-filled cells for every (col,value) even if this node had no
+    // data for that column (preserves the previous behaviour where aggFor→0).
+    for (const col of colLeaves) for (let vi = 0; vi < nValues; vi++) { const k = cellKey(col, vi); if (!node.values.has(k)) node.values.set(k, aggregate([], values[vi].aggregate)); }
+    for (let vi = 0; vi < nValues; vi++) { const k = cellKey(ROW_TOTAL, vi); if (!node.values.has(k)) node.values.set(k, aggregate([], values[vi].aggregate)); }
     return node;
   };
-  const rowTree = rootOrder.map((k) => finalize(rootChildren.get(k)!));
+  const rootBuilds = rootOrder.map((k) => rootChildren.get(k)!);
+  const rowTree = rootBuilds.map((b) => finalize(b));
 
-  // 5. Grand totals (over ALL leaves).
-  const allLeaves = rowLeafOrder;
+  // 4. Grand totals (over ALL leaves) — merge every top-level node's accumulators.
+  const grandAcc = new Map<string, AccGroup>();
+  for (const b of rootBuilds) for (const [col, grp] of b.acc) mergeGroupInto(grandAcc, col, grp);
   const grand = new Map<string, number>();
-  values.forEach((_, vi) => {
-    for (const col of colLeaves) grand.set(cellKey(col, vi), aggFor(allLeaves, col, vi));
-    grand.set(cellKey("", vi), aggFor(allLeaves, null, vi));
-  });
+  for (const [col, grp] of grandAcc) for (let vi = 0; vi < nValues; vi++) grand.set(cellKey(col, vi), readAcc(grp[vi], values[vi].aggregate));
+  for (const col of colLeaves) for (let vi = 0; vi < nValues; vi++) { const k = cellKey(col, vi); if (!grand.has(k)) grand.set(k, aggregate([], values[vi].aggregate)); }
+  for (let vi = 0; vi < nValues; vi++) { const k = cellKey(ROW_TOTAL, vi); if (!grand.has(k)) grand.set(k, aggregate([], values[vi].aggregate)); }
 
   // 6. Column header tree (levels of the column fields).
   const colTree = buildColTree(colLeaves);
@@ -273,7 +386,7 @@ export function renderPivotModel(model: PivotModel): RenderedPivot {
     });
     if (showGrand.column) {
       values.forEach((v, vi) => {
-        const val = node ? node.values.get(cellKey("", vi)) : model.grand.get(cellKey("", vi));
+        const val = node ? node.values.get(cellKey(ROW_TOTAL, vi)) : model.grand.get(cellKey(ROW_TOTAL, vi));
         set(row, totalStart + vi, { v: val ?? 0, s: numStyle(v.numFmt ?? NUMBER_PATTERN, true) });
       });
     }

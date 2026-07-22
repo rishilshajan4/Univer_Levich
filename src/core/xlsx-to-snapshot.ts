@@ -17,6 +17,21 @@
  * when an actual import happens.
  */
 import type { WorkbookData } from "./types";
+import type { ImportedPivot } from "./pivot-import";
+
+/**
+ * The snapshot returned by {@link parseXlsxToSnapshot}. It is a Univer
+ * `IWorkbookData` (Univer ignores the extra non-schema keys) PLUS two escape-hatch
+ * fields carrying data Univer's snapshot can't hold natively:
+ *   - `drawingsImport` — floating images for the Facade insert path.
+ *   - `pivotsImport` — reconstructed INTERACTIVE pivots (source + spec + location)
+ *     so a host can open an imported pivot in `LevichSheet`'s `pivotInteractive`
+ *     mode (seeding `initialSpec`) instead of the static cell render.
+ */
+export type ParsedSnapshot = WorkbookData & {
+  drawingsImport?: ImportImage[];
+  pivotsImport?: ImportedPivot[];
+};
 
 /* -------------------------------------------------------------------------- */
 /* Loose ExcelJS shapes (avoid tight coupling to exceljs' generics)           */
@@ -654,10 +669,13 @@ export async function placeImportImages(api: unknown, images: ImportImage[], ind
 /* -------------------------------------------------------------------------- */
 /* Public: convert a File / ArrayBuffer to a Univer snapshot                  */
 /* -------------------------------------------------------------------------- */
-export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
+export async function parseXlsxToSnapshot(file: File): Promise<ParsedSnapshot> {
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(await file.arrayBuffer());
+  // Keep the raw bytes: ExcelJS discards the pivot-table XML parts, so we re-read
+  // them from the ZIP (jszip) to reconstruct interactive pivots (see pivot-import).
+  const rawBytes = await file.arrayBuffer();
+  await wb.xlsx.load(rawBytes);
 
   // One workbook-wide style registry; cells reference styles by id (keeps the
   // snapshot small when a style repeats — headers, fills, etc.).
@@ -974,7 +992,8 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
   if (Object.keys(filterResource).length) resources.push({ name: "SHEET_FILTER_PLUGIN", data: JSON.stringify(filterResource) });
   if (Object.keys(cfResource).length) resources.push({ name: "SHEET_CONDITIONAL_FORMATTING_PLUGIN", data: JSON.stringify(cfResource) });
   if (Object.keys(linkResource).length) resources.push({ name: "SHEET_HYPER_LINK_PLUGIN", data: JSON.stringify(linkResource) });
-  return {
+
+  const snapshot: ParsedSnapshot = {
     id: WORKBOOK_ID,
     name: baseName,
     sheetOrder,
@@ -985,5 +1004,18 @@ export async function parseXlsxToSnapshot(file: File): Promise<WorkbookData> {
     // imported sheets into an EXISTING workbook, which bypasses the snapshot
     // resource). Univer ignores unknown top-level keys.
     drawingsImport: images,
-  } as WorkbookData;
+  } as ParsedSnapshot;
+
+  // Non-Univer escape-hatch (mirrors `drawingsImport`): reconstruct any pivot
+  // tables into interactive `PivotSource` + `PivotSpec` so a host can open them
+  // in `pivotInteractive` mode. Best-effort — never blocks the import.
+  try {
+    const { parsePivotsFromXlsx } = await import("./pivot-import");
+    const pivots = await parsePivotsFromXlsx(rawBytes, snapshot);
+    if (pivots.length) snapshot.pivotsImport = pivots;
+  } catch (e) {
+    console.warn("[levich] pivot reconstruction failed", e);
+  }
+
+  return snapshot;
 }
