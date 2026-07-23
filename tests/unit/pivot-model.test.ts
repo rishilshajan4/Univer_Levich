@@ -269,3 +269,21 @@ describe("empty / rows-only pivots (Google-Sheets behavior — no invented COUNT
     expect(hasGrandTotal).toBe(false);
   });
 });
+
+describe("numeric coercion of imported currency/formatted strings (SUM must not silently return 0)", () => {
+  it("sums cells stored as display strings ($, commas, accounting parens, %)", () => {
+    const src: PivotSource = {
+      fields: ["type", "credit"],
+      rows: [
+        { type: "J", credit: "$196,282.09" }, // currency string
+        { type: "J", credit: "15,094.96" }, // thousands separator
+        { type: "J", credit: "(1,000.00)" }, // accounting negative
+        { type: "J", credit: 100 }, // already a number
+      ],
+    };
+    const m = computePivotModel(src, { rows: ["type"], columns: [], values: [{ field: "credit", aggregate: "sum" }] });
+    const j = m.rowTree.find((n) => n.key === "J")!;
+    // 196282.09 + 15094.96 - 1000 + 100 = 210477.05
+    expect(j.values.get(`${ROW_TOTAL}␟0`)).toBeCloseTo(210477.05, 2);
+  });
+});

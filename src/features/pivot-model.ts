@@ -99,10 +99,31 @@ const newAcc = (needVals = false, needUniq = false): Acc => ({
 
 /** Fold one RAW value into an accumulator (keeps distinctness for COUNTUNIQUE + the
  *  value list for MEDIAN; everything else is O(1) sufficient statistics). */
+/**
+ * Coerce a cell value to a number for numeric aggregation. Imported .xlsx cells often
+ * carry the DISPLAY string ("$196,282.09", "(1,234.50)", "45%") rather than a raw number,
+ * and plain Number() returns NaN for those — which silently dropped them from SUM/AVG/etc.
+ * (the "pivot shows 0 / no data" bug). Strip currency symbols + thousands separators, read
+ * accounting-style "(n)" as negative, and honor a trailing "%".
+ */
+function toNumber(raw: unknown): number {
+  if (typeof raw === "number") return raw;
+  if (typeof raw !== "string") return Number(raw);
+  let s = raw.trim();
+  if (s === "") return NaN;
+  const paren = /^\((.*)\)$/.exec(s);
+  if (paren) s = "-" + paren[1];
+  const pct = s.endsWith("%");
+  if (pct) s = s.slice(0, -1);
+  s = s.replace(/[,$£€¥\s ]/g, "");
+  const n = Number(s);
+  return Number.isFinite(n) ? (pct ? n / 100 : n) : NaN;
+}
+
 function pushAcc(a: Acc, raw: unknown): void {
   a.n += 1;
   if (a.uniq && raw != null && String(raw).trim() !== "") a.uniq.add(String(raw));
-  const x = typeof raw === "number" ? raw : Number(raw);
+  const x = toNumber(raw);
   if (Number.isFinite(x)) {
     a.sum += x;
     a.fn += 1;
