@@ -455,7 +455,7 @@ export function PivotPanel({ fields, spec, onChange, onClose, distinctValues }: 
                 onDragOver={allowDrop(key)}
                 onDragLeave={() => setOverArea((a) => (a === key ? null : a))}
                 onDrop={dropOnArea(key)}
-                style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 8, padding: active ? 6 : 0, borderRadius: 8, background: active ? "#fef3c7" : "transparent", border: active ? "1px dashed #fde68a" : "1px solid transparent" }}
+                style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 8, padding: active ? 6 : 0, borderRadius: 8, background: active ? "var(--color-utility-brand-50)" : "transparent", border: active ? "1px dashed var(--color-border-brand_alt)" : "1px solid transparent" }}
               >
                 {placed.length === 0 && <span style={emptyHint}>No fields — use Add or drag a field here.</span>}
                 {placed.map((field, i) => (
