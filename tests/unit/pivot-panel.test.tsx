@@ -21,6 +21,8 @@ import {
   fieldsInArea,
   placeField,
   removeField,
+  removeFromArea,
+  clearAll,
   setValueAggregate,
   aggregateOfValue,
 } from "../../src/features/pivot-panel";
@@ -79,6 +81,43 @@ describe("pivot-panel spec helpers", () => {
     const next = setValueAggregate(baseSpec, "Amount", "count");
     expect(next.values[0].aggregate).toBe("count");
   });
+
+  it("ADDs a field to Values while keeping it in Rows (Google-Sheets multi-area)", () => {
+    // No `moveFrom` = a fields-list ADD: Amount lives in Values already; putting Region in
+    // Values must NOT pull Region out of Rows.
+    const next = placeField(baseSpec, "Region", "values");
+    expect(next.rows).toEqual(["Region"]);
+    expect(fieldsInArea(next, "values")).toEqual(["Amount", "Region"]);
+  });
+
+  it("MOVEs a field out of its source section when dragged from a chip", () => {
+    // `moveFrom: "rows"` = the chip was dragged from Rows → it should vacate Rows.
+    const next = placeField(baseSpec, "Region", "values", undefined, "rows");
+    expect(next.rows).toEqual([]);
+    expect(fieldsInArea(next, "values")).toEqual(["Amount", "Region"]);
+  });
+
+  it("keeps Rows and Columns mutually exclusive", () => {
+    const next = placeField(baseSpec, "Region", "columns"); // even without moveFrom
+    expect(next.rows).toEqual([]);
+    expect(next.columns).toEqual(["Region"]);
+  });
+
+  it("removeFromArea drops a field from ONE area only", () => {
+    const both = placeField(baseSpec, "Region", "values"); // Region now in rows + values
+    const afterRowsX = removeFromArea(both, "Region", "rows");
+    expect(afterRowsX.rows).toEqual([]);
+    expect(fieldsInArea(afterRowsX, "values")).toEqual(["Amount", "Region"]); // still summed
+  });
+
+  it("clearAll empties every area", () => {
+    const full: PivotSpec = { rows: ["A"], columns: ["B"], values: [{ field: "C", aggregate: "sum" }], filters: [{ field: "D" }], dimSettings: { A: { order: "desc" } } };
+    const empty = clearAll(full);
+    expect(empty.rows).toEqual([]);
+    expect(empty.columns).toEqual([]);
+    expect(empty.values).toEqual([]);
+    expect(empty.filters).toEqual([]);
+  });
 });
 
 describe("<PivotPanel />", () => {
@@ -125,5 +164,32 @@ describe("<PivotPanel />", () => {
     fireEvent.click(screen.getByText("% of grand total"));
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange.mock.calls[0][0].values[0].showAs).toBe("pctOfGrand");
+  });
+
+  it("renders a persistent Fields rail with a draggable chip per source field", () => {
+    render(<PivotPanel fields={fields} spec={baseSpec} onChange={() => {}} />);
+    for (const f of fields) {
+      const chip = screen.getByTestId(`field-${f}`);
+      expect(chip).toBeTruthy();
+      expect(chip.getAttribute("draggable")).toBe("true"); // draggable even when already placed
+    }
+  });
+
+  it("offers a Sort-by control on a Rows card listing the value fields", () => {
+    const onChange = vi.fn();
+    render(<PivotPanel fields={fields} spec={baseSpec} onChange={onChange} />);
+    fireEvent.click(screen.getByLabelText("Sort Region by")); // open the Sort-by Select
+    fireEvent.click(screen.getByText("Sum of Amount")); // sort Region groups by the Amount total
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][0].dimSettings?.Region?.sortBy).toBe("Amount");
+  });
+
+  it("Clear all resets the pivot to empty", () => {
+    const onChange = vi.fn();
+    render(<PivotPanel fields={fields} spec={baseSpec} onChange={onChange} />);
+    fireEvent.click(screen.getByTestId("pivot-clear-all"));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][0].rows).toEqual([]);
+    expect(onChange.mock.calls[0][0].values).toEqual([]);
   });
 });

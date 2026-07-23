@@ -46,6 +46,24 @@ describe("computePivotModel", () => {
     expect(m.grand.get(`${ROW_TOTAL}␟0`)).toBe(400); // 180 + 220
   });
 
+  it("Sort by a VALUE orders the row groups by that value's total, honoring asc/desc", () => {
+    // West total = 180, East total = 220. Default (label) order is alphabetical: East, West.
+    const bySum = (order: "asc" | "desc"): string[] =>
+      computePivotModel(source, {
+        rows: ["region"],
+        columns: [],
+        values: [{ field: "amount", aggregate: "sum" }],
+        dimSettings: { region: { sortBy: "amount", order } },
+      }).rowTree.map((n) => n.key);
+    // Ascending by total: West (180) before East (220).
+    expect(bySum("asc")).toEqual(["West", "East"]);
+    // Descending by total: East (220) before West (180).
+    expect(bySum("desc")).toEqual(["East", "West"]);
+    // Sanity: WITHOUT sortBy it falls back to label order (East, West).
+    const byLabel = computePivotModel(source, { rows: ["region"], columns: [], values: [{ field: "amount", aggregate: "sum" }] }).rowTree.map((n) => n.key);
+    expect(byLabel).toEqual(["East", "West"]);
+  });
+
   it("average TOTAL is over the union of underlying values, not an average-of-averages (Excel-exact)", () => {
     const spec: PivotSpec = { rows: ["region"], columns: ["product"], values: [{ field: "amount", aggregate: "average" }] };
     const m = computePivotModel(source, spec);

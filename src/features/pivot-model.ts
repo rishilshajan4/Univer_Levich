@@ -357,6 +357,26 @@ export function computePivotModel(source: PivotSource, spec: PivotSpec): PivotMo
     const ord = sortOrderFor(field);
     keys.sort((a, c) => (ord === "desc" ? -cmp.compare(a, c) : cmp.compare(a, c)));
   };
+  // "Sort by": when a dimension's `sortBy` names a VALUE field (not its own label), the
+  // sibling groups at that level are ordered by that value's aggregated total instead of by
+  // label. The child PivotNodes must already be finalized (their ROW_TOTAL values populated).
+  const valueSortIndex = (field: string | undefined): number => {
+    if (!field) return -1;
+    const sb = spec.dimSettings?.[field]?.sortBy;
+    if (!sb || sb === field) return -1; // default: sort by label (handled by sortKeys)
+    return values.findIndex((v) => v.field === sb);
+  };
+  const applyValueSort = (children: PivotNode[], field: string | undefined): PivotNode[] => {
+    const vi = valueSortIndex(field);
+    if (vi < 0) return children;
+    const ord = sortOrderFor(field) === "desc" ? -1 : 1;
+    const totOf = (n: PivotNode) => (n.values.get(cellKey(ROW_TOTAL, vi)) ?? 0) as number;
+    // Stable numeric sort by the chosen value's grand total for each group.
+    return children
+      .map((n, i) => ({ n, i }))
+      .sort((a, b) => ord * (totOf(a.n) - totOf(b.n)) || a.i - b.i)
+      .map((x) => x.n);
+  };
   const finalize = (b: Build): PivotNode => {
     sortKeys(b.childOrder, spec.rows[b.level + 1]); // children are the NEXT row field
     const children = b.childOrder.map((k) => finalize(b.children.get(k)!));
@@ -371,7 +391,11 @@ export function computePivotModel(source: PivotSource, spec: PivotSpec): PivotMo
       const cb = b.children.get(b.childOrder[i])!;
       for (const [col, grp] of cb.acc) mergeGroupInto(b.acc, col, grp);
     }
-    const node: PivotNode = { key: b.key, path: b.path, level: b.level, children, values: new Map() };
+    // "Sort by": reorder these children by a value's total if this level's dim asks for it
+    // (children are finalized here, so their ROW_TOTAL values exist). Falls back to the
+    // label order established by sortKeys() above when sortBy is the field's own label.
+    const orderedChildren = applyValueSort(children, spec.rows[b.level + 1]);
+    const node: PivotNode = { key: b.key, path: b.path, level: b.level, children: orderedChildren, values: new Map() };
     for (const [col, grp] of b.acc) for (let vi = 0; vi < nValues; vi++) node.values.set(cellKey(col, vi), readAcc(grp[vi], values[vi].aggregate));
     // Guarantee zero-filled cells for every (col,value) even if this node had no
     // data for that column (preserves the previous behaviour where aggFor→0).
@@ -379,9 +403,9 @@ export function computePivotModel(source: PivotSource, spec: PivotSpec): PivotMo
     for (let vi = 0; vi < nValues; vi++) { const k = cellKey(ROW_TOTAL, vi); if (!node.values.has(k)) node.values.set(k, aggregate([], values[vi].aggregate)); }
     return node;
   };
-  sortKeys(rootOrder, spec.rows[0]); // top-level row groups
+  sortKeys(rootOrder, spec.rows[0]); // top-level row groups (label order)
   const rootBuilds = rootOrder.map((k) => rootChildren.get(k)!);
-  const rowTree = rootBuilds.map((b) => finalize(b));
+  const rowTree = applyValueSort(rootBuilds.map((b) => finalize(b)), spec.rows[0]); // then Sort-by-value
 
   // 4. Grand totals (over ALL leaves) — merge every top-level node's accumulators.
   const grandAcc = new Map<string, AccGroup>();
@@ -391,10 +415,32 @@ export function computePivotModel(source: PivotSource, spec: PivotSpec): PivotMo
   for (const col of colLeaves) for (let vi = 0; vi < nValues; vi++) { const k = cellKey(col, vi); if (!grand.has(k)) grand.set(k, aggregate([], values[vi].aggregate)); }
   for (let vi = 0; vi < nValues; vi++) { const k = cellKey(ROW_TOTAL, vi); if (!grand.has(k)) grand.set(k, aggregate([], values[vi].aggregate)); }
 
-  // 6. Column header tree (levels of the column fields).
-  const colTree = buildColTree(colLeaves);
+  // 6. Column "Sort by" (value-based): order the column leaves within each parent group by
+  // the chosen value's grand total. Parent groups keep their established (label) order so
+  // nested column headers stay contiguous; only siblings under a shared prefix are reordered.
+  const colDimField = spec.columns[spec.columns.length - 1];
+  const colSortVi = valueSortIndex(colDimField);
+  let orderedColLeaves = colLeaves;
+  if (colSortVi >= 0 && colLeaves.length > 1) {
+    const ord = sortOrderFor(colDimField) === "desc" ? -1 : 1;
+    const parentOf = (leaf: string) => { const i = leaf.lastIndexOf(SEP); return i < 0 ? "" : leaf.slice(0, i); };
+    const totOf = (leaf: string) => (grand.get(cellKey(leaf, colSortVi)) ?? 0) as number;
+    const groups: string[][] = [];
+    const groupIdx = new Map<string, number>();
+    for (const leaf of colLeaves) {
+      const p = parentOf(leaf);
+      let gi = groupIdx.get(p);
+      if (gi === undefined) { gi = groups.length; groupIdx.set(p, gi); groups.push([]); }
+      groups[gi].push(leaf);
+    }
+    for (const g of groups) g.sort((a, b) => ord * (totOf(a) - totOf(b)));
+    orderedColLeaves = groups.flat();
+  }
 
-  return { spec, rowTree, colLeaves, colTree, grand, values };
+  // 7. Column header tree (levels of the column fields).
+  const colTree = buildColTree(orderedColLeaves);
+
+  return { spec, rowTree, colLeaves: orderedColLeaves, colTree, grand, values };
 }
 
 function buildColTree(colLeaves: string[]): PivotNode[] {

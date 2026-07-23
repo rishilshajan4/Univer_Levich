@@ -18,6 +18,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from "react";
 import { ChevronDown, Plus, X } from "@untitledui/icons";
 import type { PivotAggregate, PivotDimSetting, PivotShowAs, PivotSpec, PivotValueField } from "../core/types";
+import { valueLabel } from "./pivot-model";
 
 /* ─── Spec model (pure, testable) ─────────────────────────────────────────── */
 
@@ -84,7 +85,7 @@ export function areaOfField(spec: PivotSpec, field: string): PivotArea | null {
   return null;
 }
 
-/** Remove a field from every area, returning a new spec. */
+/** Remove a field from EVERY area (used by "Clear field" / legacy callers). */
 export function removeField(spec: PivotSpec, field: string): PivotSpec {
   return {
     ...spec,
@@ -95,42 +96,70 @@ export function removeField(spec: PivotSpec, field: string): PivotSpec {
   };
 }
 
+/** Remove a field from ONE area only. Used by the chip ✕ (so a field that lives in
+ *  both Rows and Values loses only the one you dismiss) and by move-between-areas. */
+export function removeFromArea(spec: PivotSpec, field: string, area: PivotArea): PivotSpec {
+  switch (area) {
+    case "rows":
+      return { ...spec, rows: spec.rows.filter((f) => f !== field) };
+    case "columns":
+      return { ...spec, columns: spec.columns.filter((f) => f !== field) };
+    case "values":
+      return { ...spec, values: spec.values.filter((v) => v.field !== field) };
+    case "filters":
+      return { ...spec, filters: (spec.filters ?? []).filter((f) => f.field !== field) };
+  }
+}
+
 /**
- * Insert `field` into `area` at `index` (append when index is undefined / out of
- * range). The field is first removed from wherever it was, so moving between
- * areas and reordering within an area are the same operation. When dropping into
- * Values, the field's existing `PivotValueField` (aggregate) is preserved; a new
- * one defaults to "sum".
+ * Insert `field` into `area` at `index` (append when index is undefined / out of range).
+ *
+ * Google-Sheets semantics — a field can live in MULTIPLE areas at once (e.g. Amount grouped
+ * in Rows AND summed in Values), so placing does NOT wipe it from everywhere:
+ *  - Rows and Columns are mutually exclusive (a field is a row OR a column, never both).
+ *  - The target area is de-duped (dropping a chip onto its own area = reorder, not duplicate).
+ *  - `moveFrom` is set only when the drag ORIGINATED from another section chip → that's a MOVE,
+ *    so the source area is vacated. Dragging from the fields list (moveFrom undefined) is an ADD
+ *    that leaves the field wherever else it already sits — this is what lets you reuse a field.
+ * When placing into Values, an existing `PivotValueField` (its aggregate) is preserved.
  */
-export function placeField(spec: PivotSpec, field: string, area: PivotArea, index?: number): PivotSpec {
-  // Preserve an existing value-field config (its aggregate) across the move.
+export function placeField(spec: PivotSpec, field: string, area: PivotArea, index?: number, moveFrom?: PivotArea): PivotSpec {
   const existingValue = spec.values.find((v) => v.field === field);
-  const cleared = removeField(spec, field);
+  let next = spec;
+  if (area === "rows") next = removeFromArea(next, field, "columns");
+  else if (area === "columns") next = removeFromArea(next, field, "rows");
+  next = removeFromArea(next, field, area); // de-dupe within the target
+  if (moveFrom && moveFrom !== area) next = removeFromArea(next, field, moveFrom); // MOVE: vacate source
   const at = (arr: unknown[]): number => (index === undefined || index < 0 || index > arr.length ? arr.length : index);
 
   switch (area) {
     case "rows": {
-      const rows = [...cleared.rows];
+      const rows = [...next.rows];
       rows.splice(at(rows), 0, field);
-      return { ...cleared, rows };
+      return { ...next, rows };
     }
     case "columns": {
-      const columns = [...cleared.columns];
+      const columns = [...next.columns];
       columns.splice(at(columns), 0, field);
-      return { ...cleared, columns };
+      return { ...next, columns };
     }
     case "filters": {
-      const filters = [...(cleared.filters ?? [])];
+      const filters = [...(next.filters ?? [])];
       filters.splice(at(filters), 0, { field });
-      return { ...cleared, filters };
+      return { ...next, filters };
     }
     case "values": {
-      const values = [...cleared.values];
+      const values = [...next.values];
       const vf: PivotValueField = existingValue ?? { field, aggregate: "sum" };
       values.splice(at(values), 0, vf);
-      return { ...cleared, values };
+      return { ...next, values };
     }
   }
+}
+
+/** Reset a spec to an empty pivot (the "Clear all" action). */
+export function clearAll(spec: PivotSpec): PivotSpec {
+  return { ...spec, rows: [], columns: [], values: [], filters: [], dimSettings: {}, collapsed: [] };
 }
 
 /** Change the aggregation of a value field. */
@@ -204,7 +233,7 @@ const drawer: CSSProperties = {
   top: 0,
   right: 0,
   bottom: 0,
-  width: 400,
+  width: 480,
   background: T.bg,
   borderLeft: `1px solid ${T.borderSecondary}`,
   boxShadow: "-8px 0 24px rgba(16,24,40,0.08)",
@@ -212,6 +241,22 @@ const drawer: CSSProperties = {
   flexDirection: "column",
   zIndex: 50,
 };
+
+// Right-hand "Fields" rail — the persistent, draggable source list of every field, mirroring
+// Google Sheets. Fields stay here even once placed, so you can drag the same field into more
+// than one section (e.g. group by Amount in Rows AND sum Amount in Values).
+const fieldsRail: CSSProperties = {
+  width: 148,
+  flexShrink: 0,
+  borderLeft: `1px solid ${T.borderSecondary}`,
+  display: "flex",
+  flexDirection: "column",
+  minHeight: 0,
+  background: "var(--color-bg-secondary)",
+};
+const fieldsList: CSSProperties = { display: "flex", flexDirection: "column", gap: 3, overflowY: "auto", padding: "0 8px 12px" };
+const fieldChip: CSSProperties = { display: "flex", alignItems: "center", gap: 7, padding: "6px 8px", borderRadius: 6, fontSize: 12.5, color: "var(--color-text-primary)", cursor: "grab", background: "var(--color-bg-primary)", border: "1px solid var(--color-border-secondary)", userSelect: "none" };
+const fieldDot: CSSProperties = { width: 6, height: 6, borderRadius: "50%", flexShrink: 0, boxSizing: "border-box" };
 const header: CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px 8px", flexShrink: 0 };
 const titleStyle: CSSProperties = { fontSize: 15, fontWeight: 600, color: T.textPrimary };
 const closeBtn: CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 8, border: "none", background: "transparent", color: T.textTertiary, cursor: "pointer" };
@@ -223,6 +268,9 @@ const areaTitle: CSSProperties = { fontSize: 11, fontWeight: 600, color: T.textT
 const emptyHint: CSSProperties = { fontSize: 11.5, color: T.textQuaternary, fontStyle: "italic" };
 
 const DND_MIME = "application/x-levich-pivot-field";
+// Carries the AREA a drag originated from ("" = dragged from the fields list). A drag from a
+// section chip is a MOVE (vacates the source); a drag from the fields list is an ADD.
+const DND_AREA = "application/x-levich-pivot-src-area";
 
 const cardStyle: CSSProperties = { border: `1px solid ${T.borderSecondary}`, borderRadius: 8, background: T.bg, padding: 10, display: "flex", flexDirection: "column", gap: 8 };
 const cardHead: CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 };
@@ -290,36 +338,47 @@ const SECTION_ORDER: Array<{ key: PivotArea; label: string }> = [
 
 export function PivotPanel({ fields, spec, onChange, onClose, distinctValues }: PivotPanelProps) {
   const [dragField, setDragField] = useState<string | null>(null);
+  const [dragSourceArea, setDragSourceArea] = useState<PivotArea | null>(null); // null = from the fields list
   const [overArea, setOverArea] = useState<PivotArea | null>(null);
   const [addOpen, setAddOpen] = useState<PivotArea | null>(null); // which section's "Add" menu is open
   const [addQuery, setAddQuery] = useState("");
+  const [fieldQuery, setFieldQuery] = useState(""); // search box in the fields rail
   const [filterOpen, setFilterOpen] = useState<string | null>(null); // which filter field's checklist is open
 
-  const startDrag = (field: string) => (e: DragEvent) => {
+  // `sourceArea` is the section a placed chip is dragged FROM (→ MOVE). Omit it when dragging
+  // from the fields rail (→ ADD, so the field stays wherever else it already lives).
+  const startDrag = (field: string, sourceArea?: PivotArea) => (e: DragEvent) => {
     setDragField(field);
+    setDragSourceArea(sourceArea ?? null);
     e.dataTransfer.effectAllowed = "move";
     try {
       e.dataTransfer.setData(DND_MIME, field);
+      e.dataTransfer.setData(DND_AREA, sourceArea ?? "");
       e.dataTransfer.setData("text/plain", field);
     } catch {
       /* some browsers restrict custom MIME in tests — the ref fallback covers it */
     }
   };
-  const endDrag = () => { setDragField(null); setOverArea(null); };
+  const endDrag = () => { setDragField(null); setDragSourceArea(null); setOverArea(null); };
   const fieldFrom = (e: DragEvent): string | null => e.dataTransfer.getData(DND_MIME) || e.dataTransfer.getData("text/plain") || dragField;
+  const areaFrom = (e: DragEvent): PivotArea | undefined => {
+    const a = e.dataTransfer.getData(DND_AREA);
+    return (a || dragSourceArea || undefined) as PivotArea | undefined;
+  };
   const dropOnArea = (area: PivotArea, index?: number) => (e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     const field = fieldFrom(e);
+    const from = areaFrom(e);
     endDrag();
-    if (field) onChange(placeField(spec, field, area, index));
+    if (field) onChange(placeField(spec, field, area, index, from));
   };
   const allowDrop = (area: PivotArea) => (e: DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     if (overArea !== area) setOverArea(area);
   };
-  const removeChip = (field: string) => onChange(removeField(spec, field));
+  const removeChip = (field: string, area: PivotArea) => onChange(removeFromArea(spec, field, area));
 
   const addRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -343,15 +402,32 @@ export function PivotPanel({ fields, spec, onChange, onClose, distinctValues }: 
     return fields.filter((f) => !inArea.has(f) && (q ? f.toLowerCase().includes(q) : true));
   };
 
+  // "Sort by" choices for a Rows/Columns field: the field's own labels (default) or any
+  // configured Value (sorts the groups by that aggregated number). Mirrors Google Sheets.
+  const sortByOptions = (dimField: string): Array<{ value: string; label: string }> => [
+    { value: dimField, label: dimField },
+    ...spec.values.map((v) => ({ value: v.field, label: valueLabel(v) })),
+  ];
   const dimCard = (field: string): ReactNode => {
     const s = dimSettingOf(spec, field);
     return (
-      <div style={ctrlRow}>
-        <div>
-          <label style={ctrlLabel}>Order</label>
-          <Select value={s.order ?? "asc"} options={ORDER_OPTS} ariaLabel={`Order for ${field}`} onChange={(v) => onChange(setDimSetting(spec, field, { order: v }))} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={ctrlRow}>
+          <div>
+            <label style={ctrlLabel}>Order</label>
+            <Select value={s.order ?? "asc"} options={ORDER_OPTS} ariaLabel={`Order for ${field}`} onChange={(v) => onChange(setDimSetting(spec, field, { order: v }))} />
+          </div>
+          <div>
+            <label style={ctrlLabel}>Sort by</label>
+            <Select
+              value={s.sortBy ?? field}
+              options={sortByOptions(field)}
+              ariaLabel={`Sort ${field} by`}
+              onChange={(v) => onChange(setDimSetting(spec, field, { sortBy: v === field ? undefined : v }))}
+            />
+          </div>
         </div>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: T.textSecondary, alignSelf: "flex-end", height: 30 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: T.textSecondary }}>
           <input type="checkbox" style={{ accentColor: "var(--color-fiab-yellow-600)" }} checked={s.showTotals ?? true} onChange={(e) => onChange(setDimSetting(spec, field, { showTotals: e.target.checked }))} />
           Show totals
         </label>
@@ -426,66 +502,111 @@ export function PivotPanel({ fields, spec, onChange, onClose, distinctValues }: 
       `}</style>
       <header style={header}>
         <span style={titleStyle}>Pivot table editor</span>
-        {onClose && (
-          <button type="button" aria-label="Close" className="lvpv-icon-btn" onClick={onClose} style={closeBtn}>
-            <X size={18} />
+        <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+          <button
+            type="button"
+            className="lvpv-link"
+            style={{ color: T.brand, fontWeight: 600, fontSize: 12.5, background: "none", border: "none", cursor: "pointer", padding: "4px 6px" }}
+            onClick={() => onChange(clearAll(spec))}
+            data-testid="pivot-clear-all"
+          >
+            Clear all
           </button>
-        )}
+          {onClose && (
+            <button type="button" aria-label="Close" className="lvpv-icon-btn" onClick={onClose} style={closeBtn}>
+              <X size={18} />
+            </button>
+          )}
+        </div>
       </header>
 
-      <div style={bodyStyle}>
-        {SECTION_ORDER.map(({ key, label }) => {
-          const placed = fieldsInArea(spec, key);
-          const active = overArea === key;
-          return (
-            <div key={key} data-testid={`area-${key}`}>
-              <div style={sectionHead}>
-                <span style={areaTitle}>{label}</span>
-                <div ref={addOpen === key ? addRef : undefined} style={{ position: "relative" }}>
-                  <button type="button" className={CLS_SECONDARY_BTN} onClick={() => { setAddOpen((a) => (a === key ? null : key)); setAddQuery(""); }} data-testid={`add-${key}`} aria-label={`Add to ${label}`}>
-                    <Plus size={14} style={{ color: T.fgQuaternary }} /> Add
-                  </button>
-                  {addOpen === key && (
-                    <div style={{ ...popover, right: 0, width: 200 }} role="menu">
-                      <input style={{ ...searchInput, height: 30, margin: "2px 2px 6px" }} placeholder="Search fields" value={addQuery} autoFocus onChange={(e) => setAddQuery(e.target.value)} aria-label="Search fields to add" />
-                      {addableFields(key).map((f) => (
-                        <div key={f} role="menuitem" className="lvpv-item" style={popItem(false)} onClick={() => { onChange(placeField(spec, f, key)); setAddOpen(null); setAddQuery(""); }} data-testid={`add-field-${key}-${f}`}>
-                          {f}
-                        </div>
-                      ))}
-                      {addableFields(key).length === 0 && <div style={{ ...emptyHint, padding: "6px 10px" }}>No fields.</div>}
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        {/* Left column: the four drop sections (Rows · Columns · Values · Filters). */}
+        <div style={bodyStyle}>
+          {SECTION_ORDER.map(({ key, label }) => {
+            const placed = fieldsInArea(spec, key);
+            const active = overArea === key;
+            return (
+              <div key={key} data-testid={`area-${key}`}>
+                <div style={sectionHead}>
+                  <span style={areaTitle}>{label}</span>
+                  <div ref={addOpen === key ? addRef : undefined} style={{ position: "relative" }}>
+                    <button type="button" className={CLS_SECONDARY_BTN} onClick={() => { setAddOpen((a) => (a === key ? null : key)); setAddQuery(""); }} data-testid={`add-${key}`} aria-label={`Add to ${label}`}>
+                      <Plus size={14} style={{ color: T.fgQuaternary }} /> Add
+                    </button>
+                    {addOpen === key && (
+                      <div style={{ ...popover, right: 0, width: 200 }} role="menu">
+                        <input style={{ ...searchInput, height: 30, margin: "2px 2px 6px" }} placeholder="Search fields" value={addQuery} autoFocus onChange={(e) => setAddQuery(e.target.value)} aria-label="Search fields to add" />
+                        {addableFields(key).map((f) => (
+                          <div key={f} role="menuitem" className="lvpv-item" style={popItem(false)} onClick={() => { onChange(placeField(spec, f, key)); setAddOpen(null); setAddQuery(""); }} data-testid={`add-field-${key}-${f}`}>
+                            {f}
+                          </div>
+                        ))}
+                        {addableFields(key).length === 0 && <div style={{ ...emptyHint, padding: "6px 10px" }}>No fields.</div>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div
+                  onDragOver={allowDrop(key)}
+                  onDragLeave={() => setOverArea((a) => (a === key ? null : a))}
+                  onDrop={dropOnArea(key)}
+                  style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 8, padding: active ? 6 : 0, borderRadius: 8, background: active ? "var(--color-utility-brand-50)" : "transparent", border: active ? "1px dashed var(--color-border-brand_alt)" : "1px solid transparent" }}
+                >
+                  {placed.length === 0 && <span style={emptyHint}>Drag a field here, or use Add.</span>}
+                  {placed.map((field, i) => (
+                    <div
+                      key={field}
+                      style={cardStyle}
+                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                      onDrop={dropOnArea(key, i)}
+                      data-testid={`chip-${key}-${field}`}
+                    >
+                      <div style={cardHead}>
+                        <span style={cardName} draggable onDragStart={startDrag(field, key)} onDragEnd={endDrag} title={field}>{field}</span>
+                        <button type="button" aria-label={`Remove ${field}`} onClick={() => removeChip(field, key)} style={chipRemove}><X size={13} /></button>
+                      </div>
+                      {(key === "rows" || key === "columns") && dimCard(field)}
+                      {key === "values" && valueCard(field)}
+                      {key === "filters" && filterCard(field)}
                     </div>
-                  )}
+                  ))}
                 </div>
               </div>
-              <div
-                onDragOver={allowDrop(key)}
-                onDragLeave={() => setOverArea((a) => (a === key ? null : a))}
-                onDrop={dropOnArea(key)}
-                style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 8, padding: active ? 6 : 0, borderRadius: 8, background: active ? "var(--color-utility-brand-50)" : "transparent", border: active ? "1px dashed var(--color-border-brand_alt)" : "1px solid transparent" }}
-              >
-                {placed.length === 0 && <span style={emptyHint}>No fields — use Add or drag a field here.</span>}
-                {placed.map((field, i) => (
+            );
+          })}
+        </div>
+
+        {/* Right column: the persistent, draggable Fields rail (the Google-Sheets source list).
+            A field stays here after placement so it can be dragged into more than one section. */}
+        <div style={fieldsRail}>
+          <div style={{ ...areaTitle, padding: "14px 10px 6px" }}>Fields</div>
+          {fields.length > 6 && (
+            <input style={{ ...searchInput, height: 30, margin: "0 8px 8px", width: "auto" }} placeholder="Search" value={fieldQuery} onChange={(e) => setFieldQuery(e.target.value)} aria-label="Search available fields" />
+          )}
+          <div style={fieldsList}>
+            {fields
+              .filter((f) => { const q = fieldQuery.trim().toLowerCase(); return q ? f.toLowerCase().includes(q) : true; })
+              .map((f) => {
+                const inUse = areaOfField(spec, f) !== null;
+                return (
                   <div
-                    key={field}
-                    style={cardStyle}
-                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    onDrop={dropOnArea(key, i)}
-                    data-testid={`chip-${key}-${field}`}
+                    key={f}
+                    draggable
+                    onDragStart={startDrag(f)}
+                    onDragEnd={endDrag}
+                    title={inUse ? `${f} — already in use; drag to add to another area` : `${f} — drag into a section`}
+                    data-testid={`field-${f}`}
+                    style={{ ...fieldChip, opacity: inUse ? 0.6 : 1 }}
                   >
-                    <div style={cardHead}>
-                      <span style={cardName} draggable onDragStart={startDrag(field)} onDragEnd={endDrag} title={field}>{field}</span>
-                      <button type="button" aria-label={`Remove ${field}`} onClick={() => removeChip(field)} style={chipRemove}><X size={13} /></button>
-                    </div>
-                    {(key === "rows" || key === "columns") && dimCard(field)}
-                    {key === "values" && valueCard(field)}
-                    {key === "filters" && filterCard(field)}
+                    <span style={{ ...fieldDot, background: inUse ? "var(--color-fiab-yellow-600)" : "transparent", border: inUse ? "none" : `1px solid ${T.borderPrimary}` }} />
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f}</span>
                   </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+                );
+              })}
+            {fields.length === 0 && <div style={{ ...emptyHint, padding: "6px 10px" }}>No fields.</div>}
+          </div>
+        </div>
       </div>
     </aside>
   );
