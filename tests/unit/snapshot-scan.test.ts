@@ -66,4 +66,14 @@ describe("emptyFormulaCells (feature #12 — recompute only uncached formula cel
     });
     expect(emptyFormulaCells(s)).toEqual([]);
   });
+
+  it("SKIPS uncached cross-sheet formulas (the #NAME? fix) — recomputing them against empty shells would render #NAME?/#REF!", () => {
+    const s = snap({
+      1: { 0: { f: "=SUM(A1:A3)" } }, // same-sheet, uncached → still recomputed
+      2: { 0: { f: "='P&L'!B12" } }, // cross-sheet ref → skip
+      3: { 0: { f: "=SUM(Detail!A:A)" } }, // cross-sheet range → skip
+      4: { 0: { f: "=Balance!C1 + D1", v: "" } }, // cross-sheet + empty cache → skip
+    });
+    expect(emptyFormulaCells(s)).toEqual([{ row: 1, column: 0, formula: "=SUM(A1:A3)" }]);
+  });
 });

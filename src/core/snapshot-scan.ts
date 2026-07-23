@@ -63,9 +63,17 @@ export function emptyFormulaCells(snapshot: unknown): Array<{ row: number; colum
   const out: Array<{ row: number; column: number; formula: string }> = [];
   for (const [r, cols] of Object.entries(cellData)) {
     for (const [c, cell] of Object.entries(cols)) {
-      const hasFormula = cell && typeof cell.f === "string" && cell.f.length > 0;
+      const f = cell && typeof cell.f === "string" ? cell.f : "";
+      const hasFormula = f.length > 0;
       const noCachedValue = cell?.v === undefined || cell?.v === null || cell?.v === "";
-      if (hasFormula && noCachedValue) out.push({ row: Number(r), column: Number(c), formula: cell!.f as string });
+      // Do NOT recompute a cross-sheet formula on load. Under the lazy shell-workbook
+      // model only the active sheet is hydrated; every other sheet is an empty shell,
+      // so recomputing `='P&L'!B12` / `=SUM(Detail!A:A)` here resolves the reference
+      // against nothing and renders #NAME?/#REF! (the "formula broken" regression).
+      // A "!" in an Excel formula reliably marks a sheet-qualified reference; same-sheet
+      // formulas never contain one, so those still get their blank totals filled in.
+      const referencesOtherSheet = f.includes("!");
+      if (hasFormula && noCachedValue && !referencesOtherSheet) out.push({ row: Number(r), column: Number(c), formula: f });
     }
   }
   return out;
