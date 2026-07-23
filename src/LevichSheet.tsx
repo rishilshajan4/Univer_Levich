@@ -37,20 +37,10 @@ function ribbonFor(toolbar: LevichSheetProps["toolbar"]): "collapsed" | "simple"
  * text-like field becomes the row grouping, and the first numeric field is
  * summed. Falls back to counting the first field when nothing looks numeric.
  */
-function defaultPivotSpec(source: PivotSource): PivotSpec {
-  const fields = source.fields;
-  const sample = source.rows[0] ?? {};
-  const isNumeric = (f: string) => {
-    const v = sample[f];
-    return typeof v === "number" || (v != null && v !== "" && Number.isFinite(Number(v)));
-  };
-  const numericField = fields.find(isNumeric);
-  const textField = fields.find((f) => f !== numericField && !isNumeric(f)) ?? fields.find((f) => f !== numericField);
-  return {
-    rows: textField ? [textField] : fields.slice(0, 1),
-    columns: [],
-    values: numericField ? [{ field: numericField, aggregate: "sum" }] : [{ field: fields[0] ?? "value", aggregate: "count" }],
-  };
+function defaultPivotSpec(_source: PivotSource): PivotSpec {
+  // Google-Sheets behavior: a freshly-inserted pivot is EMPTY — no rows/columns/values.
+  // The user configures it from the editor; nothing renders until they add a field.
+  return { rows: [], columns: [], values: [] };
 }
 
 /**

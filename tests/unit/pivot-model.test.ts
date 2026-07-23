@@ -247,3 +247,25 @@ describe("computePivotModel — the extra Google aggregates + Show-as", () => {
     expect(cellVals).toContain(0.5);
   });
 });
+
+describe("empty / rows-only pivots (Google-Sheets behavior — no invented COUNT, no phantom Grand Total)", () => {
+  it("a fully-empty spec renders NOTHING (no invented count, no Grand Total artifact)", () => {
+    const empty: PivotSpec = { rows: [], columns: [], values: [] };
+    const region = renderPivotModel(computePivotModel(source, empty));
+    expect(region).toEqual({ cells: {}, rowCount: 0, columnCount: 0 });
+  });
+
+  it("rows-only (no values) groups by the row field but renders NO value cells / no numeric Grand Total", () => {
+    const spec: PivotSpec = { rows: ["region"], columns: [], values: [] };
+    const m = computePivotModel(source, spec);
+    // Grouping still happens (distinct regions), but the model carries no invented value.
+    expect(m.rowTree.map((n) => n.key).sort()).toEqual(["East", "West"]);
+    expect(m.values.length).toBe(0);
+    const region = renderPivotModel(m);
+    // Only the row-label column exists (col 0); no value/Grand-Total columns.
+    expect(region.columnCount).toBe(1);
+    // No "Grand Total" row is emitted when there are no values to total.
+    const hasGrandTotal = Object.values(region.cells).some((row) => Object.values(row).some((c) => (c as { v?: unknown }).v === "Grand Total"));
+    expect(hasGrandTotal).toBe(false);
+  });
+});

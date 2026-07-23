@@ -192,7 +192,12 @@ export function valueLabel(v: PivotValueField): string {
 
 /** Compute the full pivot tree from a source + spec. */
 export function computePivotModel(source: PivotSource, spec: PivotSpec): PivotModel {
-  const values = spec.values.length ? spec.values : [{ field: source.fields[0] ?? "value", aggregate: "count" as PivotAggregate }];
+  // Use ONLY the value fields the user configured. Previously an empty Values list
+  // silently invented `count(fields[0])`, which manufactured a constant "Grand Total =
+  // row-count" (e.g. 1000) that never reflected the layout — the source of the "pivot
+  // shows data I didn't ask for / won't clear" bug. With no values the pivot shows just
+  // the row/column labels (Google-Sheets behavior).
+  const values = spec.values;
 
   // 1. Filter rows.
   const filters = spec.filters ?? [];
@@ -410,9 +415,17 @@ export interface RenderedPivot {
 /** Render a computed pivot model into a styled cell region. */
 export function renderPivotModel(model: PivotModel): RenderedPivot {
   const { spec, colLeaves, values } = model;
+  // A fully-empty pivot (no rows, columns, or values) renders NOTHING — the in-place
+  // apply then clears any stale rectangle, so an unconfigured/cleared pivot is blank
+  // (matches Google Sheets) instead of leaving a phantom "Grand Total" behind.
+  if (spec.rows.length === 0 && spec.columns.length === 0 && values.length === 0) {
+    return { cells: {}, rowCount: 0, columnCount: 0 };
+  }
   const collapsed = new Set(spec.collapsed ?? []);
   const showRowSubtotals = spec.showRowSubtotals ?? spec.rows.length > 1;
-  const showGrand = spec.showGrandTotals ?? { row: true, column: true };
+  // Grand totals need at least one value to total. With rows/columns but no values the
+  // pivot lists the distinct labels only (no numeric grand total), like Google Sheets.
+  const showGrand = values.length === 0 ? { row: false, column: false } : (spec.showGrandTotals ?? { row: true, column: true });
   const realCols = colLeaves.filter((c) => c !== "");
 
   const cells: Record<number, Record<number, Cell>> = {};
