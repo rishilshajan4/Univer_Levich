@@ -423,20 +423,23 @@ export const LevichSheet = forwardRef<LevichSheetHandle, LevichSheetProps>(funct
       const clearRows = Math.max(prev.rows, region.rowCount);
       const clearCols = Math.max(prev.cols, region.columnCount);
 
-      // Grow the pivot sheet to fit BEFORE writing. The sheet is created with a small default
-      // (~60 rows) for an empty pivot; a layout that produces more rows/columns than that (e.g.
-      // grouping by a high-cardinality field like a date) would make `getRange(0,0,clearRows,…)`
-      // exceed the sheet bounds → setValues silently no-ops → a blank pivot. Extend the grid to
-      // clearRows/clearCols (+ a small buffer) so every rendered cell has a home.
-      const growN = (max: number, need: number, at: number, insert?: (i: number, n: number) => void, setCount?: (n: number) => void) => {
+      // Grow the pivot sheet to fit BEFORE writing. The host pre-sizes the sheet to the
+      // source's cardinality (a hard upper bound — a pivot can't have more rows/cols than
+      // the source has rows), so in practice the region ALWAYS fits and this is a no-op.
+      // This block is a belt-and-suspenders backstop only.
+      //
+      // IMPORTANT: use `setRowCount`/`setColumnCount` (a worksheet-config mutation) — NEVER
+      // `insertRows`/`insertColumns`. The pivot output sheet is read-only (users can't edit
+      // pivot cells), and the Facade's `insertRows` runs through Univer's permission plugin,
+      // which pops a BLOCKING modal alert ("The range is protected…") on a locked sheet.
+      // `setRowCount` bypasses that permission check, so growth (if ever needed) is silent.
+      const growN = (max: number, need: number, setCount?: (n: number) => void) => {
         if (max >= need) return;
-        const add = need - max + 8;
-        if (typeof insert === "function") insert(at, add);
-        else if (typeof setCount === "function") setCount(need + 8);
+        if (typeof setCount === "function") setCount(need + 8);
       };
       try {
-        growN(sheet.getMaxRows?.() ?? 0, clearRows, sheet.getMaxRows?.() ?? 0, sheet.insertRows?.bind(sheet), sheet.setRowCount?.bind(sheet));
-        growN(sheet.getMaxColumns?.() ?? 0, clearCols, sheet.getMaxColumns?.() ?? 0, sheet.insertColumns?.bind(sheet), sheet.setColumnCount?.bind(sheet));
+        growN(sheet.getMaxRows?.() ?? 0, clearRows, sheet.setRowCount?.bind(sheet));
+        growN(sheet.getMaxColumns?.() ?? 0, clearCols, sheet.setColumnCount?.bind(sheet));
       } catch {
         /* best-effort growth; getRange below may still clamp */
       }
